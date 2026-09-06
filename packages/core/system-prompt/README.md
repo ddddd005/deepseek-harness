@@ -77,6 +77,10 @@ Tool-schema providers are evaluated per assembly and contribute the model-visibl
 
 `suppressRuntimeContext()` removes every dynamic runtime-context contribution for the calling scope without disabling the services that own the underlying facts; multiple suppressors compose and the effect restores context when none remains.
 
+### Read the contribution catalog
+
+`catalog(context, options)` returns the evaluated, read-only view of the contributions behind one assembly of the requested scope: sections, contexts, and variables, each with its stable branded identity (`PromptContributionId`, equal to the registered name), owner package, scope, placement order, dynamic flag, evaluated text, and — for sections — the `complete` claim. The default view lists only effective contributions; `includeShadowed: true` adds registered-but-shadowed entries marked `effective: false` with the nearer scope that displaced them. The view stops short of an assembly: it runs no `system-prompt/assemble` waterfall and enforces no complete section, and resolver functions never escape. See the [prompt-control package](../../packages/prompt/prompt-control/README.md) for the service that freezes this surface.
+
 -----
 
 <a id="understand-the-implementation"></a>

@@ -6,7 +6,9 @@
 
 import { Context, Service } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { AnonymousEntries, NamedEntries, ScopedLayers, scopeTarget } from '@deepseek-ai/dsh-scope'
+import { brandString } from '@deepseek-ai/dsh-brand'
+import type { Branded } from '@deepseek-ai/dsh-brand'
+import { AnonymousEntries, NamedEntries, ScopedLayers, scopeOf, scopeTarget } from '@deepseek-ai/dsh-scope'
 import type { ScopeKey, ScopeLayer, Scoped } from '@deepseek-ai/dsh-scope'
 import type { ContextSnapshotSection, ToolSchema } from '@deepseek-ai/dsh-llm'
 
@@ -83,6 +85,24 @@ export interface PromptContext {
   readonly text: string | ((context: AssembleContext) => string)
 }
 
+/** Stable branded identity of one prompt contribution — its registered name. */
+export type PromptContributionId = Branded<'PromptContributionId'>
+
+/** How long one prompt contribution's registered text lasts. */
+export type PromptContributionLifetime = 'durable' | 'dynamic-snapshot' | 'request-only'
+
+/** Provenance captured when a prompt contribution is registered. */
+export interface PromptContributionSource {
+  /** Owning plugin label: the registering caller's Cordis fiber name. */
+  readonly ownerPackage: string
+  /** The stable contribution identity — the registered name, branded. */
+  readonly contributionId: PromptContributionId
+  /** The scope the contribution was registered in; `undefined` is global. */
+  readonly scope?: ScopeKey
+  /** Fixed text lasts for the registration; resolver text is re-evaluated per assembly. */
+  readonly lifetime: PromptContributionLifetime
+}
+
 /** One section of an assembly: {@link PromptSection} with its text resolved. */
 export interface AssembledSection {
   /** The contributing section's unique name. */
@@ -116,6 +136,87 @@ export interface PromptAssembly {
   contexts: AssembledContext[]
   tools: ToolSchema[]
   variables: Record<string, string | undefined>
+}
+
+/** Options for one read-only {@link SystemPrompt.catalog} view. */
+export interface CatalogOptions {
+  /**
+   * Also return registered-but-shadowed contributions, marked `effective: false`
+   * with the nearer scope that displaced them. Default `false` — the
+   * request-facing view that only lists what an assembly would use.
+   */
+  readonly includeShadowed?: boolean
+}
+
+/** One evaluated system-prompt section in a {@link PromptCatalog}. */
+export interface CatalogSection {
+  /** Stable branded identity — equals {@link name}. */
+  readonly id: PromptContributionId
+  /** The registered section name. */
+  readonly name: string
+  /** Which assembly lane the contribution feeds. */
+  readonly lane: 'system'
+  /** Registration provenance captured for the owning caller. */
+  readonly source: PromptContributionSource
+  /** The section's registered placement order. */
+  readonly order: number
+  /** The section text evaluated with the catalog context (never a resolver). */
+  readonly text: string
+  /** Whether the registered text is a resolver evaluated per assembly. */
+  readonly dynamic: boolean
+  /** Whether this section claims to be the complete system prompt. */
+  readonly complete: boolean
+  /** Whether an assembly of this scope uses this contribution. */
+  readonly effective: boolean
+  /** For a shadowed entry: the nearer scope whose same-name registration displaced it. */
+  readonly shadowedBy?: ScopeKey
+}
+
+/** One evaluated dynamic-context contribution in a {@link PromptCatalog}. */
+export interface CatalogContext {
+  /** Stable branded identity — equals {@link name}. */
+  readonly id: PromptContributionId
+  /** The registered context name. */
+  readonly name: string
+  /** Which assembly lane the contribution feeds. */
+  readonly lane: 'context'
+  /** Registration provenance captured for the owning caller. */
+  readonly source: PromptContributionSource
+  /** The context's registered placement order. */
+  readonly order: number
+  /** The context text evaluated with the catalog context (never a resolver). */
+  readonly text: string
+  /** Whether the registered text is a resolver evaluated per assembly. */
+  readonly dynamic: boolean
+  /** Whether an assembly of this scope uses this contribution. */
+  readonly effective: boolean
+  /** For a shadowed entry: the nearer scope whose same-name registration displaced it. */
+  readonly shadowedBy?: ScopeKey
+}
+
+/** One evaluated prompt variable in a {@link PromptCatalog}. */
+export interface CatalogVariable {
+  /** Stable branded identity — equals {@link name}. */
+  readonly id: PromptContributionId
+  /** The registered variable reference name. */
+  readonly name: string
+  /** Registration provenance captured for the owning caller. */
+  readonly source: PromptContributionSource
+  /** Variables are providers, so their value is re-evaluated per assembly. */
+  readonly dynamic: true
+  /** Whether an assembly of this scope uses this variable. */
+  readonly effective: boolean
+  /** For a shadowed entry: the nearer scope whose same-name registration displaced it. */
+  readonly shadowedBy?: ScopeKey
+  /** The value evaluated with the catalog context; `undefined` is a legal provider result. */
+  readonly value: string | undefined
+}
+
+/** The evaluated, read-only registry view behind one assembly. */
+export interface PromptCatalog {
+  readonly sections: readonly CatalogSection[]
+  readonly contexts: readonly CatalogContext[]
+  readonly variables: readonly CatalogVariable[]
 }
 
 const SECTION_ORDERS = {
@@ -348,16 +449,74 @@ function interpolate(
 /** One tool-schema provider stored in a prompt layer. */
 type ToolProvider = (context: AssembleContext) => ToolProviderResult
 
-/** One prompt-variable provider stored in a prompt layer. */
-type VariableProvider = (context: AssembleContext) => string | undefined
+/** One registered section plus the provenance captured at registration. */
+interface RegisteredSection extends PromptSection {
+  readonly source: PromptContributionSource
+  readonly dynamic: boolean
+}
+
+/** One registered context plus the provenance captured at registration. */
+interface RegisteredContext extends PromptContext {
+  readonly source: PromptContributionSource
+  readonly dynamic: boolean
+}
+
+/** One registered variable provider plus the provenance captured at registration. */
+interface RegisteredVariable {
+  (context: AssembleContext): string | undefined
+  readonly source: PromptContributionSource
+}
+
+/** One catalog row: a registration plus the shadow state observed on the walk. */
+interface CatalogRow<V> {
+  /** The registered reference name (the table key). */
+  name: string
+  registration: V
+  effective: boolean
+  shadowedBy?: ScopeKey
+}
+
+/**
+ * Walk the global layer and the scope chain farthest-first — the same
+ * ascending-precedence order {@link ScopedLayers.merge} applies — and keep
+ * every row. A same-name registration seen later belongs to the nearer scope;
+ * it wins the name and marks every row it displaced shadowed.
+ */
+function registryRows<V extends { readonly source: PromptContributionSource }>(
+  layerViews: readonly PromptLayer[],
+  pick: (layer: PromptLayer) => NamedEntries<V>,
+): CatalogRow<V>[] {
+  const rows: CatalogRow<V>[] = []
+  const effectiveByName = new Map<string, CatalogRow<V>>()
+  for (const layer of layerViews) {
+    for (const [name, registration] of pick(layer).entries()) {
+      const row: CatalogRow<V> = { name, registration, effective: true }
+      const displaced = effectiveByName.get(name)
+      if (displaced !== undefined) {
+        // A later row displaces only from a nearer scope layer, which always
+        // owns a key; the global layer is walked first and cannot displace.
+        displaced.effective = false
+        displaced.shadowedBy = registration.source.scope as ScopeKey
+      }
+      effectiveByName.set(name, row)
+      rows.push(row)
+    }
+  }
+  return rows
+}
+
+/** Evaluate registered text: static text passes through, a resolver runs per call. */
+function evaluateText(text: string | ((context: AssembleContext) => string), context: AssembleContext): string {
+  return typeof text === 'function' ? text(context) : text
+}
 
 /** All prompt registrations owned by one global or scoped layer. */
 class PromptLayer implements ScopeLayer {
-  readonly sections: NamedEntries<PromptSection>
-  readonly contexts: NamedEntries<PromptContext>
+  readonly sections: NamedEntries<RegisteredSection>
+  readonly contexts: NamedEntries<RegisteredContext>
   readonly runtimeContextSuppressors = new AnonymousEntries<true>()
   readonly toolProviders = new AnonymousEntries<ToolProvider>()
-  readonly variables: NamedEntries<VariableProvider>
+  readonly variables: NamedEntries<RegisteredVariable>
 
   /**
    * Create one prompt layer with diagnostics specific to its ownership scope.
@@ -401,6 +560,22 @@ export class SystemPrompt extends Service {
   )
   private readonly toolOrder: string[] | undefined
 
+  /**
+   * Capture the provenance of one registration made through the calling
+   * context. The traceable service proxy binds `this.ctx` to the caller, so
+   * the fiber name is the owning plugin label and `scopeOf` answers the
+   * registration scope the effect will land in.
+   */
+  private contributionSource(name: string, dynamic: boolean): PromptContributionSource {
+    const scope = scopeOf(this.ctx)
+    return Object.freeze({
+      ownerPackage: this.ctx.fiber.name,
+      contributionId: brandString<PromptContributionId>(name),
+      ...(scope === undefined ? {} : { scope }),
+      lifetime: dynamic ? 'dynamic-snapshot' : 'durable',
+    })
+  }
+
   constructor(ctx: Context, config: Config) {
     super(ctx, 'systemPrompt')
     this.toolOrder = validateToolOrder(config.toolOrder)
@@ -433,9 +608,14 @@ export class SystemPrompt extends Service {
     if (!Number.isFinite(section.order)) {
       throw new TypeError(`prompt section "${section.name}" order must be a finite number`)
     }
+    const dynamic = typeof section.text === 'function'
     return this.layers.effect(
       this.ctx,
-      layer => layer.sections.insert(section.name, section),
+      layer => layer.sections.insert(section.name, {
+        ...section,
+        source: this.contributionSource(section.name, dynamic),
+        dynamic,
+      }),
       { label: 'systemPrompt.section()' },
     )
   }
@@ -468,9 +648,14 @@ export class SystemPrompt extends Service {
     if (!Number.isFinite(context.order)) {
       throw new TypeError(`prompt context "${context.name}" order must be a finite number`)
     }
+    const dynamic = typeof context.text === 'function'
     return this.layers.effect(
       this.ctx,
-      layer => layer.contexts.insert(context.name, context),
+      layer => layer.contexts.insert(context.name, {
+        ...context,
+        source: this.contributionSource(context.name, dynamic),
+        dynamic,
+      }),
       { label: 'systemPrompt.context()' },
     )
   }
@@ -518,7 +703,14 @@ export class SystemPrompt extends Service {
     }
     return this.layers.effect(
       this.ctx,
-      layer => layer.variables.insert(name, provider),
+      (layer) => {
+        // Wrap so the caller's function is never mutated with registry metadata.
+        const registered: RegisteredVariable = Object.assign(
+          (context: AssembleContext) => provider(context),
+          { source: this.contributionSource(name, true) },
+        )
+        return layer.variables.insert(name, registered)
+      },
       { label: 'systemPrompt.variable()' },
     )
   }
@@ -608,6 +800,83 @@ export class SystemPrompt extends Service {
       sections: completeSection === undefined ? transformed.sections : [completeSection],
       contexts: runtimeContextSuppressed ? [] : transformed.contexts,
     }
+  }
+
+  /**
+   * The evaluated, read-only registry view behind one assembly of this scope.
+   *
+   * Entries carry their registration provenance ({@link PromptContributionSource}),
+   * placement order, dynamic flag, and — for sections — their `complete` claim.
+   * Resolver texts are evaluated with the supplied context, and evaluation
+   * errors propagate exactly as the equivalent assembly would; resolver
+   * functions never escape, so entries carry evaluated text only.
+   *
+   * The view stops short of an assembly: it does not run the
+   * `system-prompt/assemble` waterfall and does not enforce a complete section,
+   * so `complete` is reported as a claim. Context entries mirror assembly
+   * suppression — a view whose runtime context is suppressed lists none.
+   * By default only effective contributions are returned; the `includeShadowed`
+   * option adds registered-but-shadowed entries marked `effective: false` with
+   * the nearer scope that displaced them. The returned structure is frozen.
+   * @param context - the scope and plugin-defined fields used to evaluate resolvers.
+   * @param options - view options, such as including shadowed contributions.
+   * @returns the frozen evaluated catalog for the requested scope.
+   */
+  catalog(context: AssembleContext = {}, options: CatalogOptions = {}): PromptCatalog {
+    const includeShadowed = options.includeShadowed ?? false
+    // The same ascending-precedence walk merge() applies: global first, then
+    // scope-chain overlays farthest ancestor first, so a later same-name row wins.
+    const layerViews: readonly PromptLayer[] = [this.layers.global, ...this.layers.chainLayers(context.scope)]
+    const runtimeContextSuppressed = layerViews.some(layer => !layer.runtimeContextSuppressors.isEmpty())
+
+    const sections = registryRows(layerViews, layer => layer.sections)
+      .filter(row => row.effective || includeShadowed)
+      .sort((a, b) => comparePromptSections(a.registration, b.registration))
+      .map((row): CatalogSection => Object.freeze({
+        id: row.registration.source.contributionId,
+        name: row.name,
+        lane: 'system',
+        source: row.registration.source,
+        order: row.registration.order,
+        text: evaluateText(row.registration.text, context),
+        dynamic: row.registration.dynamic,
+        complete: row.registration.complete === true,
+        effective: row.effective,
+        ...(row.effective || row.shadowedBy === undefined ? {} : { shadowedBy: row.shadowedBy }),
+      }))
+    const contexts = runtimeContextSuppressed
+      ? []
+      : registryRows(layerViews, layer => layer.contexts)
+        .filter(row => row.effective || includeShadowed)
+        .sort((a, b) => a.registration.order - b.registration.order)
+        .map((row): CatalogContext => Object.freeze({
+          id: row.registration.source.contributionId,
+          name: row.name,
+          lane: 'context',
+          source: row.registration.source,
+          order: row.registration.order,
+          text: evaluateText(row.registration.text, context),
+          dynamic: row.registration.dynamic,
+          effective: row.effective,
+          ...(row.effective || row.shadowedBy === undefined ? {} : { shadowedBy: row.shadowedBy }),
+        }))
+    const variables = registryRows(layerViews, layer => layer.variables)
+      .filter(row => row.effective || includeShadowed)
+      .sort((a, b) => compareNames(a.name, b.name))
+      .map((row): CatalogVariable => Object.freeze({
+        id: row.registration.source.contributionId,
+        name: row.name,
+        source: row.registration.source,
+        dynamic: true,
+        effective: row.effective,
+        ...(row.effective || row.shadowedBy === undefined ? {} : { shadowedBy: row.shadowedBy }),
+        value: row.registration(context),
+      }))
+    return Object.freeze({
+      sections: Object.freeze(sections),
+      contexts: Object.freeze(contexts),
+      variables: Object.freeze(variables),
+    })
   }
 }
 

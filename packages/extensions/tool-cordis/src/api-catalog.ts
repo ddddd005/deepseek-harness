@@ -1387,6 +1387,19 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     ],
   },
   {
+    key: 'promptControl',
+    summary: 'Session-scoped prompt management.',
+    description: 'Session-scoped prompt management.\n\nThe service owns no prompt state in this increment: it exposes the system-prompt registry\'s evaluated read-only catalog under a frozen signature that profile storage, the rule interpreter, and request finalization build on.',
+    methods: [
+      {
+        signature: 'catalog(context?: AssembleContext, options?: CatalogOptions): PromptCatalog',
+        description: 'The evaluated, read-only view of the prompt contributions behind one assembly of the requested scope. Delegates to `SystemPrompt.catalog`, which owns the contract: per-contribution provenance, placement order, dynamic flag, and `complete` claim; effective entries only unless `includeShadowed` is requested; resolver functions never escape.',
+        parameters: [{ name: 'context', description: 'the scope and plugin-defined fields used to evaluate resolvers.' }, { name: 'options', description: 'view options, such as including shadowed contributions.' }],
+        returns: 'the frozen evaluated catalog for the requested scope.',
+      },
+    ],
+  },
+  {
     key: 'sandbox',
     summary: 'Abstract process-sandbox service.',
     description: 'Abstract process-sandbox service. confine must return enforcing argv or fail closed at wrap or runner-execution time; silent unconfined passthrough is forbidden. Functional probes arbitrate multi-runner chains and may be skipped for a sole candidate, whose own refusal remains the fail-closed end.',
@@ -2422,6 +2435,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'Assemble global and scoped providers, detach tool parameters, apply canonical ordering, then run the assembly waterfall. Scoped sections and variables shadow globals. The returned waterfall value is authoritative except that an effective complete section is restored afterwards as the sole prompt section.',
         parameters: [{ name: 'context', description: 'the optional scope and plugin-defined assembly fields.' }],
         returns: 'the post-waterfall assembly with any complete prompt enforced.',
+      },
+      {
+        signature: 'catalog(context: AssembleContext = {}, options: CatalogOptions = {}): PromptCatalog',
+        description: 'The evaluated, read-only registry view behind one assembly of this scope.\n\nEntries carry their registration provenance (PromptContributionSource), placement order, dynamic flag, and — for sections — their `complete` claim. Resolver texts are evaluated with the supplied context, and evaluation errors propagate exactly as the equivalent assembly would; resolver functions never escape, so entries carry evaluated text only.\n\nThe view stops short of an assembly: it does not run the `system-prompt/assemble` waterfall and does not enforce a complete section, so `complete` is reported as a claim. Context entries mirror assembly suppression — a view whose runtime context is suppressed lists none. By default only effective contributions are returned; the `includeShadowed` option adds registered-but-shadowed entries marked `effective: false` with the nearer scope that displaced them. The returned structure is frozen.',
+        parameters: [{ name: 'context', description: 'the scope and plugin-defined fields used to evaluate resolvers.' }, { name: 'options', description: 'view options, such as including shadowed contributions.' }],
+        returns: 'the frozen evaluated catalog for the requested scope.',
       },
     ],
   },
@@ -3714,6 +3733,22 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type BrandedNumber<B extends string> = number & {\n    readonly [BRAND]: B;\n};',
   },
   {
+    name: 'CatalogContext',
+    declaration: 'export interface CatalogContext {\n    readonly id: PromptContributionId;\n    readonly name: string;\n    readonly lane: \'context\';\n    readonly source: PromptContributionSource;\n    readonly order: number;\n    readonly text: string;\n    readonly dynamic: boolean;\n    readonly effective: boolean;\n    readonly shadowedBy?: ScopeKey;\n}',
+  },
+  {
+    name: 'CatalogOptions',
+    declaration: 'export interface CatalogOptions {\n    readonly includeShadowed?: boolean;\n}',
+  },
+  {
+    name: 'CatalogSection',
+    declaration: 'export interface CatalogSection {\n    readonly id: PromptContributionId;\n    readonly name: string;\n    readonly lane: \'system\';\n    readonly source: PromptContributionSource;\n    readonly order: number;\n    readonly text: string;\n    readonly dynamic: boolean;\n    readonly complete: boolean;\n    readonly effective: boolean;\n    readonly shadowedBy?: ScopeKey;\n}',
+  },
+  {
+    name: 'CatalogVariable',
+    declaration: 'export interface CatalogVariable {\n    readonly id: PromptContributionId;\n    readonly name: string;\n    readonly source: PromptContributionSource;\n    readonly dynamic: true;\n    readonly effective: boolean;\n    readonly shadowedBy?: ScopeKey;\n    readonly value: string | undefined;\n}',
+  },
+  {
     name: 'ClientArtifactBaseline',
     declaration: 'export interface ClientArtifactBaseline {\n    readonly path: string;\n    readonly mtimeMs: number;\n    readonly size: number;\n}',
   },
@@ -4718,12 +4753,28 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface PromptAssembly {\n    sections: AssembledSection[];\n    contexts: AssembledContext[];\n    tools: ToolSchema[];\n    variables: Record<string, string | undefined>;\n}',
   },
   {
+    name: 'PromptCatalog',
+    declaration: 'export interface PromptCatalog {\n    readonly sections: readonly CatalogSection[];\n    readonly contexts: readonly CatalogContext[];\n    readonly variables: readonly CatalogVariable[];\n}',
+  },
+  {
     name: 'PromptContext',
     declaration: 'export interface PromptContext {\n    readonly name: string;\n    readonly order: number;\n    readonly text: string | ((context: AssembleContext) => string);\n}',
   },
   {
     name: 'PromptContextOrderName',
     declaration: 'export type PromptContextOrderName = keyof typeof CONTEXT_ORDERS;',
+  },
+  {
+    name: 'PromptContributionId',
+    declaration: 'export type PromptContributionId = Branded<\'PromptContributionId\'>;',
+  },
+  {
+    name: 'PromptContributionLifetime',
+    declaration: 'export type PromptContributionLifetime = \'durable\' | \'dynamic-snapshot\' | \'request-only\';',
+  },
+  {
+    name: 'PromptContributionSource',
+    declaration: 'export interface PromptContributionSource {\n    readonly ownerPackage: string;\n    readonly contributionId: PromptContributionId;\n    readonly scope?: ScopeKey;\n    readonly lifetime: PromptContributionLifetime;\n}',
   },
   {
     name: 'PromptFileBinding',
@@ -5739,7 +5790,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'SystemPrompt',
-    declaration: 'export class SystemPrompt extends Service {\n    static Config: z<Config>;\n    constructor(ctx: Context, config: Config);\n    section(section: PromptSection): () => void;\n    getSectionOrder(name: PromptSectionOrderName): number;\n    getContextOrder(name: PromptContextOrderName): number;\n    context(context: PromptContext): () => void;\n    suppressRuntimeContext(): () => void;\n    tools(provider: (context: AssembleContext) => ToolProviderResult): () => void;\n    variable(name: string, provider: (context: AssembleContext) => string | undefined): () => void;\n    async assemble(context: AssembleContext = {}): Promise<PromptAssembly>;\n}',
+    declaration: 'export class SystemPrompt extends Service {\n    static Config: z<Config>;\n    constructor(ctx: Context, config: Config);\n    section(section: PromptSection): () => void;\n    getSectionOrder(name: PromptSectionOrderName): number;\n    getContextOrder(name: PromptContextOrderName): number;\n    context(context: PromptContext): () => void;\n    suppressRuntimeContext(): () => void;\n    tools(provider: (context: AssembleContext) => ToolProviderResult): () => void;\n    variable(name: string, provider: (context: AssembleContext) => string | undefined): () => void;\n    async assemble(context: AssembleContext = {}): Promise<PromptAssembly>;\n    catalog(context: AssembleContext = {}, options: CatalogOptions = {}): PromptCatalog;\n}',
   },
   {
     name: 'TableKeyOf',

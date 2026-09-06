@@ -134,6 +134,14 @@ const SERVICE_ROLES: ServiceRole[] = [
     note: 'Plugins prepare independent top-level fields; the official adapter merges them and commits their delivery state after HTTP acceptance.',
   },
   {
+    key: 'promptControl',
+    pkg: 'prompt-control',
+    title: 'Prompt Control catalog service',
+    mode: 'core',
+    consumers: [],
+    note: 'Freezes the evaluated read-only catalog over the system-prompt registry; profile storage, rules, and finalization land behind the same service.',
+  },
+  {
     key: 'tokenMeter',
     pkg: 'token-meter',
     title: 'Replay token measurement',
