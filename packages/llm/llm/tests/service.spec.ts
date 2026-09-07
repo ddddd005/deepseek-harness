@@ -1201,6 +1201,177 @@ describe('LlmRuntime', () => {
     expect(adapter.lastOptions?.provider).toBe('routed')
   })
 
+  it('lets a stream listener replace only the finalized payload of a frozen request', async () => {
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    const adapter = new RecordingAdapter(SCRIPT)
+    ctx.llm.registerAdapter(['route'], adapter)
+    const original = Object.freeze({
+      provider: 'route',
+      model: 'model',
+      messages: [],
+      system: 'assembled system',
+    })
+    const replacement: GenerateOptions = {
+      ...original,
+      system: 'controlled system',
+      messages: [createUserMessage({ content: [{ type: 'text', text: 'request-only instruction' }] })],
+      tools: [{ name: 'controlled_tool', description: 'Controlled tool', parameters: {} }],
+    }
+    ctx.on('llm/stream', (options, next) => {
+      ctx.llm.replaceStreamRequest(options, replacement)
+      return next()
+    })
+
+    const stream = ctx.llm.stream(original)
+    replacement.provider = 'changed-route'
+    replacement.system = 'late mutation'
+    replacement.messages = []
+    await expect(collect(stream)).resolves.toEqual(SCRIPT)
+
+    expect(adapter.lastOptions).toMatchObject({
+      provider: 'route',
+      system: 'controlled system',
+      tools: [{ name: 'controlled_tool', description: 'Controlled tool', parameters: {} }],
+    })
+    expect(adapter.lastOptions?.messages).toHaveLength(1)
+    expect(Object.isFrozen(adapter.lastOptions)).toBe(true)
+    expect(original).toEqual({
+      provider: 'route',
+      model: 'model',
+      messages: [],
+      system: 'assembled system',
+    })
+    expect(Object.isFrozen(original)).toBe(true)
+  })
+
+  it('rejects stream replacements that change route, model, session, purpose, or cancellation', async () => {
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    ctx.llm.registerAdapter(['route'], new ScriptedAdapter(SCRIPT))
+    const controller = new AbortController()
+    const original = {
+      provider: 'route',
+      model: 'model',
+      messages: [],
+      signal: controller.signal,
+      sessionId: 'session-a',
+    } as unknown as GenerateOptions
+    const invalidReplacements: GenerateOptions[] = [
+      { ...original, provider: 'other-route' },
+      { ...original, model: 'other-model' },
+      { ...original, sessionId: 'session-b' as never },
+      { ...original, purpose: 'session-title' },
+      { ...original, signal: new AbortController().signal },
+      { ...original, transportOnlyMetadata: 'changed' } as GenerateOptions,
+    ]
+
+    ctx.on('llm/stream', (options, next) => {
+      for (const replacement of invalidReplacements) {
+        expect(() => { ctx.llm.replaceStreamRequest(options, replacement) })
+          .toThrow(expect.objectContaining({ code: 'INVALID_STREAM_REPLACEMENT' }))
+      }
+      return next()
+    })
+
+    await collect(ctx.llm.stream(original))
+  })
+
+  it('rejects stream replacements outside their active waterfall and a second replacement inside it', async () => {
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    ctx.llm.registerAdapter(['route'], new ScriptedAdapter(SCRIPT))
+    const original: GenerateOptions = { provider: 'route', model: 'model', messages: [] }
+    const replacement = { ...original, system: 'controlled system' }
+    expect(() => { ctx.llm.replaceStreamRequest(original, replacement) })
+      .toThrow(expect.objectContaining({ code: 'INVALID_STREAM_REPLACEMENT' }))
+    ctx.on('llm/stream', (options, next) => {
+      ctx.llm.replaceStreamRequest(options, replacement)
+      expect(() => { ctx.llm.replaceStreamRequest(options, { ...original, system: 'later system' }) })
+        .toThrow(expect.objectContaining({ code: 'INVALID_STREAM_REPLACEMENT' }))
+      return next()
+    })
+
+    await collect(ctx.llm.stream(original))
+  })
+
+  it('preserves prepared-call configuration checks while replacing its payload', async () => {
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    const adapter = new RecordingAdapter(SCRIPT)
+    ctx.llm.registerAdapter(['route'], adapter)
+    const prepared = await ctx.llm.prepareCall({ provider: 'route', model: 'model' })
+    const original = Object.freeze({ ...prepared.config, messages: [] })
+    const replacement = Object.freeze({ ...original, system: 'controlled system' })
+    ctx.on('llm/stream', (options, next) => {
+      ctx.llm.replaceStreamRequest(options, replacement)
+      return next()
+    })
+
+    await collect(prepared.stream(original))
+
+    expect(adapter.lastOptions).toMatchObject({ system: 'controlled system' })
+  })
+
+  it('clears a replacement after stream completion so the request may be reused', async () => {
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    const adapter = new RecordingAdapter(SCRIPT)
+    ctx.llm.registerAdapter(['route'], adapter)
+    const original: GenerateOptions = { provider: 'route', model: 'model', messages: [] }
+    let invocation = 0
+    ctx.on('llm/stream', (options, next) => {
+      invocation += 1
+      ctx.llm.replaceStreamRequest(options, { ...options, system: `controlled ${invocation}` })
+      return next()
+    })
+
+    await collect(ctx.llm.stream(original))
+    expect(adapter.lastOptions?.system).toBe('controlled 1')
+    await collect(ctx.llm.stream(original))
+    expect(adapter.lastOptions?.system).toBe('controlled 2')
+  })
+
+  it('clears a replacement when a consumer cancels the stream', async () => {
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    ctx.llm.registerAdapter(['route'], new ScriptedAdapter(SCRIPT))
+    const original: GenerateOptions = { provider: 'route', model: 'model', messages: [] }
+    let invocation = 0
+    ctx.on('llm/stream', (options, next) => {
+      invocation += 1
+      ctx.llm.replaceStreamRequest(options, { ...options, system: `controlled ${invocation}` })
+      return next()
+    })
+
+    const iterator = ctx.llm.stream(original)[Symbol.asyncIterator]()
+    await iterator.next()
+    await iterator.return?.()
+    await collect(ctx.llm.stream(original))
+
+    expect(invocation).toBe(2)
+  })
+
+  it('clears a replacement when a downstream listener short-circuits the adapter', async () => {
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    const original: GenerateOptions = { provider: 'route', model: 'model', messages: [] }
+    let invocation = 0
+    ctx.on('llm/stream', (options, next) => {
+      invocation += 1
+      ctx.llm.replaceStreamRequest(options, { ...options, system: `controlled ${invocation}` })
+      return next()
+    })
+    ctx.on('llm/stream', () => (async function* () {
+      yield { type: 'finish', reason: { kind: 'stop' } } satisfies StreamChunk
+    })())
+
+    await collect(ctx.llm.stream(original))
+    await collect(ctx.llm.stream(original))
+
+    expect(invocation).toBe(2)
+  })
+
   it('keeps replay state when historical and target providers belong to the same adapter instance', async () => {
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)

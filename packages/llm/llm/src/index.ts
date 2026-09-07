@@ -68,10 +68,11 @@ declare module '@deepseek-ai/cordis' {
      * adapter's stream, or yield your own chunks to short-circuit.
      * @param options - the full request. A LOOP-built request carries the
      *   process-local {@link markAgentLoopRequest} identity and arrives deep-frozen
-     *   (mutation throws): its content is a pure function of the session log (the
-     *   reconstructability Agent Note), so listeners read it, never rewrite it.
-     *   Hand-built calls do not carry that marker; their messages already obey
-     *   the immutable creation contract.
+     *   (mutation throws): its content is a pure function of the session log. A
+     *   listener that must control its payload registers a constrained replacement
+     *   through {@link LlmRuntime.replaceStreamRequest}, then calls `next()`.
+     *   Hand-built calls do not carry that marker; their messages already obey the
+     *   immutable creation contract.
      * @mode waterfall
      */
     'llm/stream'(this: LlmRuntime, options: GenerateOptions, next: () => AsyncIterable<StreamChunk>): AsyncIterable<StreamChunk>
@@ -336,6 +337,8 @@ export interface DirectoryRegistrationHandle {
 export class LlmRuntime extends TypertRemoteService {
   private adapters = new Map<string, AdapterRegistration>()
   private directory = new Map<string, LlmConfigurableProvider>()
+  private activeStreamRequests = new WeakSet<GenerateOptions>()
+  private streamReplacements = new WeakMap<GenerateOptions, GenerateOptions>()
   private discoveries = new Map<
     string,
     (request: LlmModelDiscoveryRequest, signal?: AbortSignal) => Promise<readonly LlmDiscoveredModel[]>
@@ -343,6 +346,36 @@ export class LlmRuntime extends TypertRemoteService {
 
   constructor(ctx: Context) {
     super(ctx, 'llm')
+  }
+
+  /**
+   * Register the payload that the adapter will receive for one in-flight stream
+   * request. The replacement keeps the routing, call configuration, session,
+   * purpose, cancellation signal, and every unrecognized property identical;
+   * only `system`, `messages`, and `tools` may change. A request accepts one
+   * replacement, so independently composed controllers cannot silently erase
+   * each other's finalized payload.
+   * @param original - exact request object observed by an `llm/stream` listener.
+   * @param replacement - finalized request payload to pass to the adapter.
+   */
+  replaceStreamRequest(original: GenerateOptions, replacement: GenerateOptions): void {
+    if (!this.activeStreamRequests.has(original)) {
+      throw new LlmError('a stream request replacement must be registered from its active llm/stream waterfall', 'INVALID_STREAM_REPLACEMENT')
+    }
+    if (!callConfigEquals(original, replacement)
+      || original.sessionId !== replacement.sessionId
+      || original.purpose !== replacement.purpose
+      || original.signal !== replacement.signal
+      || !sameStreamRequestEnvelopeExceptPayload(original, replacement)) {
+      throw new LlmError(
+        'a stream request replacement may only change system, messages, and tools',
+        'INVALID_STREAM_REPLACEMENT',
+      )
+    }
+    if (this.streamReplacements.has(original)) {
+      throw new LlmError('a stream request already has a replacement', 'INVALID_STREAM_REPLACEMENT')
+    }
+    this.streamReplacements.set(original, freezeStreamReplacement(replacement))
   }
 
   /** Notify topology observers without letting one broken listener veto the commit. */
@@ -1007,32 +1040,33 @@ export class LlmRuntime extends TypertRemoteService {
   ): AsyncGenerator<StreamChunk> {
     let iterator: AsyncIterator<StreamChunk>
     try {
-      const registration = prepared?.registration ?? this.registration(options.provider)
+      const effectiveOptions = this.streamReplacements.get(options) ?? options
+      const registration = prepared?.registration ?? this.registration(effectiveOptions.provider)
       const adapter = registration.adapter
       let modelInfo: LlmResolvedModelInfo
       let resolvedConfig: LlmCallConfig
       let dispatch: (options: GenerateOptions) => AsyncIterable<StreamChunk>
       if (prepared === undefined) {
-        const adapterCall = await adapter.prepareCall(options.provider, options.model, options.signal)
-        modelInfo = this.normalizeModelInfo(registration, options.model, adapterCall.model)
-        resolvedConfig = this.resolveCallWithInfo(options, modelInfo).config
+        const adapterCall = await adapter.prepareCall(effectiveOptions.provider, effectiveOptions.model, effectiveOptions.signal)
+        modelInfo = this.normalizeModelInfo(registration, effectiveOptions.model, adapterCall.model)
+        resolvedConfig = this.resolveCallWithInfo(effectiveOptions, modelInfo).config
         dispatch = options => adapterCall.stream(options)
       } else {
         modelInfo = prepared.modelInfo
         resolvedConfig = prepared.config
         dispatch = prepared.dispatch
       }
-      if (prepared !== undefined && !callConfigEquals(options, resolvedConfig)) {
+      if (prepared !== undefined && !callConfigEquals(effectiveOptions, resolvedConfig)) {
         throw new LlmError(
           'prepared LLM call config changed before adapter dispatch',
           'INVALID_PREPARED_CALL',
         )
       }
-      const resolvedOptions = callConfigEquals(options, resolvedConfig)
-        ? options
-        : Object.isFrozen(options)
-          ? deepFreeze({ ...options, ...resolvedConfig })
-          : { ...options, ...resolvedConfig }
+      const resolvedOptions = callConfigEquals(effectiveOptions, resolvedConfig)
+        ? effectiveOptions
+        : Object.isFrozen(effectiveOptions)
+          ? deepFreeze({ ...effectiveOptions, ...resolvedConfig })
+          : { ...effectiveOptions, ...resolvedConfig }
       // Files are never dispatched natively: every route receives handle text.
       let projectedMessages: readonly Message[] = resolvedOptions.messages
       if (projectedMessages.some(message => contentHasFile(message.content))) {
@@ -1104,13 +1138,60 @@ export class LlmRuntime extends TypertRemoteService {
     options: GenerateOptions,
     prepared?: PreparedDispatch,
   ): AsyncIterable<StreamChunk> {
-    return this.ctx.waterfall(
-      this,
-      'llm/stream',
-      options,
-      () => this.adapterStream(options, prepared),
-    )
+    if (this.activeStreamRequests.has(options)) {
+      throw new LlmError('the same stream request is already active', 'INVALID_STREAM_REPLACEMENT')
+    }
+    this.activeStreamRequests.add(options)
+    try {
+      const stream = this.ctx.waterfall(
+        this,
+        'llm/stream',
+        options,
+        () => this.adapterStream(options, prepared),
+      )
+      return this.releaseStreamRequest(options, stream)
+    } catch (error) {
+      this.activeStreamRequests.delete(options)
+      this.streamReplacements.delete(options)
+      throw error
+    }
   }
+
+  /** Release one waterfall-scoped replacement after every stream exit path. */
+  private async * releaseStreamRequest(
+    options: GenerateOptions,
+    stream: AsyncIterable<StreamChunk>,
+  ): AsyncGenerator<StreamChunk> {
+    try {
+      yield * stream
+    } finally {
+      this.activeStreamRequests.delete(options)
+      this.streamReplacements.delete(options)
+    }
+  }
+}
+
+/** Check that a request replacement preserves every non-payload own property. */
+function sameStreamRequestEnvelopeExceptPayload(a: GenerateOptions, b: GenerateOptions): boolean {
+  const payloadFields = new Set<PropertyKey>(['system', 'messages', 'tools'])
+  const keys = new Set([...Reflect.ownKeys(a), ...Reflect.ownKeys(b)])
+  for (const key of keys) {
+    if (payloadFields.has(key)) continue
+    if (!Object.prototype.hasOwnProperty.call(a, key)
+      || !Object.prototype.hasOwnProperty.call(b, key)
+      || !Object.is(Reflect.get(a, key), Reflect.get(b, key))) return false
+  }
+  return true
+}
+
+/** Copy mutable finalized payload data before retaining it for lazy adapter dispatch. */
+function freezeStreamReplacement(replacement: GenerateOptions): GenerateOptions {
+  const frozen = {
+    ...replacement,
+    messages: deepFreeze(structuredClone(replacement.messages)),
+    ...replacement.tools === undefined ? {} : { tools: deepFreeze(structuredClone(replacement.tools)) },
+  }
+  return Object.freeze(frozen)
 }
 
 /** Convert one adapter throw into the stream protocol's terminal outcome. */
