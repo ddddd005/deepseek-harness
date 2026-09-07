@@ -340,6 +340,56 @@ describe('PromptControl service', () => {
     expect(adapter.requests[1]?.messages.some(message => message.source.kind === 'prompt-control')).toBe(false)
   })
 
+  it('prepares and previews the current session without writes or Adapter I/O', async () => {
+    const { ctx, adapter } = await mountLoopControl()
+    ctx.systemPrompt.variable('name', () => 'world')
+    ctx.systemPrompt.section({ name: 'base', order: 10, text: 'Base {{name}}' })
+    const profile = await ctx.promptControl.createProfile({
+      name: 'Preview',
+      rules: [
+        { id: PromptRuleId('replace'), enabled: true, order: 0, action: 'replace', target: 'base' as never, text: 'Preview {{name}}' },
+        { id: PromptRuleId('tail'), enabled: true, order: 1, action: 'append-request', role: 'user', text: 'Request only {{name}}' },
+      ],
+    })
+    const sessionId = SessionId('preview-current-session')
+    await ctx.promptControl.selectSessionProfile(sessionId, profile.id)
+    const agent = await ctx.agentLoop.create(sessionId, { provider: 'mock', model: 'mock' })
+    agent.session.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: 'Committed history' }],
+      source: { kind: 'user' },
+    }), { surfaceOp: 'append' })
+    const before = agent.session.snapshotEvents()
+
+    const draft = await ctx.agentLoop.prepareConversationRequest(sessionId)
+    const preview = ctx.promptControl.previewConversationRequest(draft)
+
+    expect(agent.session.snapshotEvents()).toEqual(before)
+    expect(adapter.requests).toEqual([])
+    expect(preview).toMatchObject({
+      profileId: profile.id,
+      profileRevision: profile.revision,
+      ruleIds: ['replace', 'tail'],
+    })
+    expect(preview.system).toContain('Preview world')
+    expect(preview.messages.map(message => [message.role, message.source.kind]))
+      .toEqual([['user', 'user'], ['user', 'prompt-control']])
+
+    await collect(ctx.llm.stream(draft))
+
+    expect({
+      system: adapter.lastOptions?.system,
+      messages: adapter.lastOptions?.messages,
+      tools: adapter.lastOptions?.tools,
+      ruleIds: preview.ruleIds,
+    }).toEqual({
+      system: preview.system,
+      messages: preview.messages,
+      tools: preview.tools,
+      ruleIds: ['replace', 'tail'],
+    })
+    expect(agent.session.snapshotEvents()).toEqual(before)
+  })
+
   it('snapshots selected Profile request-only input without carrying it into the next history', async () => {
     const { ctx, adapter } = await mountLoopControl()
     const profile = await ctx.promptControl.createProfile({

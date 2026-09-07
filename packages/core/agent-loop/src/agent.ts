@@ -212,6 +212,34 @@ export class ReactLoopAgent implements Agent {
     } while (activity !== this.activityDone)
   }
 
+  /**
+   * Assemble the current durable conversation surface without claiming inbox
+   * input, recording request state, or preparing an adapter call.
+   * @returns a loop-marked request draft for a read-only consumer.
+   * @throws when this agent is processing a turn, because its durable surface
+   * may change while assembly is in progress.
+   */
+  async prepareConversationRequest(): Promise<GenerateOptions> {
+    if (this.phase.kind !== 'idle') {
+      throw new Error(`agent "${this.id}" cannot prepare a request while ${this.phase.kind}`)
+    }
+    const assembly = await this.loopCtx.systemPrompt.assemble(assembleContextFor(this))
+    if (this.phase.kind !== 'idle') {
+      throw new Error(`agent "${this.id}" changed state while preparing a request`)
+    }
+    const system = renderPrompt(assembly)
+    const config = this.proposedRequestConfig()
+    return createConversationRequestDraft(
+      config,
+      this.session.deriveMessages(),
+      system,
+      assembly,
+      this,
+      this.session.id,
+      { turn: this.phase.lastTurn + 1, step: 1 },
+    )
+  }
+
   /** Report one failure at its live boundary, then preserve it for driver containment. */
   private throwError(error: unknown): never {
     const turn = this.phase.kind === 'running' ? this.phase.turn : this.phase.lastTurn
@@ -502,26 +530,7 @@ export class ReactLoopAgent implements Agent {
 
     // A loop instance starts from its declared route, restoring only an explicit
     // effort owned by that exact model. Later steps re-resolve marked defaults.
-    const persistedHeader = session.requestHeader()
-    const persistedConfig = persistedHeader?.config
-    const route = { provider: this.options.provider ?? '', model: this.options.model ?? '' }
-    const persistedReasoningEffort = persistedConfig?.provider === route.provider
-      && persistedConfig.model === route.model
-      && persistedHeader?.adapterDefaults?.reasoningEffort !== true
-      ? persistedConfig.reasoningEffort
-      : undefined
-    const reasoningEffort = this.options.reasoningEffort ?? persistedReasoningEffort
-    const maxTokens = this.options.maxTokens
-    const seedConfig = deepFreeze(structuredClone(
-      this.requestHeaderLogged
-        // oxlint-disable-next-line typescript/no-non-null-assertion -- the instance logged the header it now folds
-        ? requestProposal(persistedHeader!)
-        : {
-          ...route,
-          ...reasoningEffort === undefined ? {} : { reasoningEffort },
-          ...maxTokens === undefined ? {} : { maxTokens },
-        },
-    ))
+    const seedConfig = this.proposedRequestConfig()
     const proposedConfig = await this.dispatch.waterfall(
       'agent/request', { turn, step, signal },
       () => Promise.resolve(seedConfig),
@@ -579,20 +588,66 @@ export class ReactLoopAgent implements Agent {
     }
     signal.throwIfAborted()
 
-    const request = markAgentLoopRequest(deepFreeze({
-      ...header.config,
-      messages: boundaryMessages,
-      ...header.system !== undefined ? { system: header.system } : {},
-      ...header.tools !== undefined ? { tools: header.tools } : {},
-      sessionId: this.session.id,
+    const request = createConversationRequestDraft(
+      header.config,
+      boundaryMessages,
+      header.system ?? '',
+      assembly,
+      this,
+      this.session.id,
+      { turn, step },
       signal,
-    }), {
-      turn,
-      step,
-      prompt: freezePromptAssemblyContext(this, assembly),
-    })
+    )
     return { request, ...preparedCall === undefined ? {} : { preparedCall } }
   }
+
+  /** Build the proposal that the real request path passes through `agent/request`. */
+  private proposedRequestConfig(): LlmCallConfig {
+    const persistedHeader = this.session.requestHeader()
+    const persistedConfig = persistedHeader?.config
+    const route = { provider: this.options.provider ?? '', model: this.options.model ?? '' }
+    const persistedReasoningEffort = persistedConfig?.provider === route.provider
+      && persistedConfig.model === route.model
+      && persistedHeader?.adapterDefaults?.reasoningEffort !== true
+      ? persistedConfig.reasoningEffort
+      : undefined
+    const reasoningEffort = this.options.reasoningEffort ?? persistedReasoningEffort
+    const maxTokens = this.options.maxTokens
+    return deepFreeze(structuredClone(
+      this.requestHeaderLogged
+        // oxlint-disable-next-line typescript/no-non-null-assertion -- the instance logged the header it now folds
+        ? requestProposal(persistedHeader!)
+        : {
+          ...route,
+          ...reasoningEffort === undefined ? {} : { reasoningEffort },
+          ...maxTokens === undefined ? {} : { maxTokens },
+        },
+    ))
+  }
+}
+
+/** Create one loop-marked request without registering any LLM lifecycle state. */
+function createConversationRequestDraft(
+  config: LlmCallConfig,
+  messages: Message[],
+  system: string,
+  assembly: PromptAssembly,
+  scope: object,
+  sessionId: SessionId,
+  coordinates: Pick<AgentLoopPromptAssemblyContext & { turn: number; step: number }, 'turn' | 'step'>,
+  signal?: AbortSignal,
+): GenerateOptions {
+  return markAgentLoopRequest(deepFreeze({
+    ...config,
+    messages,
+    ...system.length === 0 ? {} : { system },
+    ...assembly.tools.length === 0 ? {} : { tools: assembly.tools },
+    sessionId,
+    ...signal === undefined ? {} : { signal },
+  }), {
+    ...coordinates,
+    prompt: freezePromptAssemblyContext(scope, assembly),
+  })
 }
 
 /** Snapshot post-waterfall prompt facts without inserting internal data into the Adapter request. */
