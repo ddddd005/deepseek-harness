@@ -340,6 +340,81 @@ describe('PromptControl service', () => {
     expect(adapter.requests[1]?.messages.some(message => message.source.kind === 'prompt-control')).toBe(false)
   })
 
+  it('snapshots selected Profile request-only input without carrying it into the next history', async () => {
+    const { ctx, adapter } = await mountLoopControl()
+    const profile = await ctx.promptControl.createProfile({
+      name: 'Request only',
+      rules: [{ id: PromptRuleId('tail'), enabled: true, order: 0, action: 'append-request', role: 'user', text: 'Only this request.' }],
+    })
+    const sessionId = SessionId('request-only-history')
+    await ctx.promptControl.selectSessionProfile(sessionId, profile.id)
+    const agent = await ctx.agentLoop.create(sessionId, { provider: 'mock', model: 'mock' })
+
+    send(agent, 'first')
+    await waitForIdle(ctx, agent)
+    send(agent, 'second')
+    await waitForIdle(ctx, agent)
+
+    const session = ctx.sessions.get(sessionId)
+    if (session === undefined) throw new Error('expected request-only history session')
+    const audits = session.snapshotEvents()
+      .filter(event => event.type === 'request/input')
+      .map(event => ({
+        ruleIds: event.data.ruleIds,
+        messages: event.data.messages.map(message => `${message.role}:${message.source.kind}`),
+      }))
+    expect({
+      selectedProfileMatches: ctx.promptControl.getSessionProfile(sessionId)?.profileId === profile.id,
+      adapterMessages: adapter.requests.map(request => request.messages.map(message => `${message.role}:${message.source.kind}`)),
+      auditMessages: audits,
+      durableMessages: session.deriveMessages().map(message => `${message.role}:${message.source.kind}`),
+    }).toMatchInlineSnapshot(`
+      {
+        "adapterMessages": [
+          [
+            "user:user",
+            "user:prompt-control",
+          ],
+          [
+            "user:user",
+            "assistant:model",
+            "user:user",
+            "user:prompt-control",
+          ],
+        ],
+        "auditMessages": [
+          {
+            "messages": [
+              "user:user",
+              "user:prompt-control",
+            ],
+            "ruleIds": [
+              "tail",
+            ],
+          },
+          {
+            "messages": [
+              "user:user",
+              "assistant:model",
+              "user:user",
+              "user:prompt-control",
+            ],
+            "ruleIds": [
+              "tail",
+            ],
+          },
+        ],
+        "durableMessages": [
+          "user:user",
+          "assistant:model",
+          "user:user",
+          "assistant:model",
+        ],
+        "selectedProfileMatches": true,
+      }
+    `)
+  })
+
   it('prevents provider I/O when finalization or request auditing fails', async () => {
     const { ctx, adapter } = await mountLoopControl()
     const sessionId = SessionId('blocked-finalization')
