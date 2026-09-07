@@ -594,6 +594,17 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 
 来源：[`packages/core/session/src/types.ts:331`](../packages/core/session/src/types.ts)
 
+<a id="requestinput--log-only"></a>
+
+#### `request/input` — log-only
+
+```ts persistence-catalog
+/** Required post-projection audit record for one Prompt-Controlled conversation request. */
+'request/input': PromptControlRequestInput
+```
+
+来源：[`packages/prompt/prompt-control/src/index.ts:87`](../packages/prompt/prompt-control/src/index.ts)
+
 ### `sandbox/*`
 
 <a id="sandboxmode--log-only"></a>

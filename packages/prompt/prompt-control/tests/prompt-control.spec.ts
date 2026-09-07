@@ -17,9 +17,9 @@ import LlmRuntime, {
 } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import SystemPrompt, { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
-import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
+import SessionStore, { Session, SessionId } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
-import ToolRuntime from '@deepseek-ai/dsh-tools'
+import ToolRuntime, { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
@@ -104,7 +104,10 @@ describe('PromptControl service', () => {
     ctx.systemPrompt.section({ name: 'delegated', order: 10, text: 'delegated text' })
     const viaControl = ctx.promptControl.catalog()
     const direct = ctx.systemPrompt.catalog()
-    expect(viaControl).toEqual(direct)
+    expect(viaControl.sections).toEqual(direct.sections)
+    expect(viaControl.contexts).toEqual(direct.contexts)
+    expect(viaControl.variables).toEqual(direct.variables)
+    expect(viaControl.tools.tools).toEqual([])
     expect(viaControl.sections.map(section => section.name)).toContain('delegated')
   })
 
@@ -264,6 +267,12 @@ describe('PromptControl service', () => {
 
   it('uses AgentLoop post-waterfall sections and unregisters finalization on disposal', async () => {
     const { ctx, fiber, adapter } = await mountLoopControl()
+    ctx.tools.register(defineContentToolFixture({
+      name: 'cataloged-tool',
+      description: 'A cataloged test tool.',
+      parameters: { query: { type: 'string' } },
+      async execute() { return [] },
+    }))
     ctx.systemPrompt.variable('name', () => 'world')
     ctx.on('system-prompt/assemble', async (assembly, _context, next) => {
       const resolved = await next()
@@ -309,6 +318,18 @@ describe('PromptControl service', () => {
       messages: adapter.requests[0]?.messages,
       tools: adapter.requests[0]?.tools,
     })
+    const catalogedTool = ctx.promptControl.catalog().tools.tools.find(tool => tool.name === 'cataloged-tool')
+    expect(catalogedTool?.effective).toBe(true)
+    expect(catalogedTool?.source.ownerPackage).toBeTruthy()
+    expect(audit.data.tools?.find(tool => tool.name === 'cataloged-tool')).toEqual(catalogedTool?.schema)
+    const session = ctx.sessions.get(sessionId)
+    if (session === undefined) throw new Error('expected finalized loop session')
+    const restored = Session.create(SessionId('loop-finalized-restored'), session.snapshotEvents())
+    expect(restored.snapshotEvents().some(event => event.type === 'request/input')).toBe(true)
+    expect(restored.deriveMessages()).toEqual(session.deriveMessages())
+    const forked = ctx.sessions.fork(session, undefined, SessionId('loop-finalized-fork'))
+    expect(forked.snapshotEvents().some(event => event.type === 'request/input')).toBe(true)
+    expect(forked.deriveMessages()).toEqual(session.deriveMessages())
     await fiber.dispose()
 
     send(agent, 'second')

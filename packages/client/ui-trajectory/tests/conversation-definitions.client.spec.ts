@@ -161,6 +161,23 @@ function assistantMessage(id: string, text: string) {
 }
 
 describe('Trajectory conversation Definitions', () => {
+  it('ignores log-only prompt-control request input records', () => {
+    const history = [
+      at(1, 'turn/start', { turn: 1 }),
+      at(2, 'step/start', { turn: 1, step: 1 }),
+    ]
+    const baseline = snapshot(assembler(history))
+    const audited = snapshot(assembler([
+      ...history,
+      at(3, 'request/input', {
+        purpose: 'conversation', turn: 1, step: 1, attempt: 1,
+        profileId: 'profile-1', profileRevision: 0, ruleIds: [],
+        provider: 'mock', model: 'mock', messages: [],
+      }),
+    ]))
+    expect(audited).toEqual(baseline)
+  })
+
   it('assembles streaming usage, preserves retry facts, and materializes interruption', () => {
     const value = assembler([
       at(1, 'turn/start', { turn: 1 }),

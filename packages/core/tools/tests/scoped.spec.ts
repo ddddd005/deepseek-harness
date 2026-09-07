@@ -95,6 +95,11 @@ describe('scoped tool registration', () => {
     expect(ctx.tools.get('bash', key)?.description).toBe(ctx.tools.get('bash', key)?.description)
     // Exactly one 'bash' in the scope's schema view (the shadow, not a double).
     expect(ctx.tools.schemas(key).filter(t => t.name === 'bash')).toHaveLength(1)
+    const catalog = ctx.tools.catalog(key, { includeShadowed: true }).tools.filter(entry => entry.name === 'bash')
+    expect(catalog).toHaveLength(2)
+    expect(catalog.find(entry => entry.effective)?.schema.description).toBe('tool bash')
+    expect(catalog.find(entry => entry.effective)?.source.scope).toBe(key)
+    expect(catalog.find(entry => !entry.effective)?.shadowedBy).toBe(key)
   })
 
   it('rejects a duplicate name within one layer, naming agent.ctx for the global case', async () => {
@@ -133,6 +138,9 @@ describe('restrict()', () => {
     expect(await run(ctx, 'capture', key)).toBe('ran:capture')
     // Other scopes and the global view are untouched.
     expect(ctx.tools.schemas().map(t => t.name).sort()).toEqual(['bash', 'read'])
+    expect(ctx.tools.catalog(key).tools.map(entry => entry.name).sort()).toEqual(['capture', 'read'])
+    expect(ctx.tools.catalog(key, { includeShadowed: true }).tools.find(entry => entry.name === 'bash'))
+      .toBeUndefined()
   })
 
   it('applies snapshotted filters to the live global registry before merging later scope-local tools', async () => {

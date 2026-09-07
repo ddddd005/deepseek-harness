@@ -272,6 +272,21 @@ describe('serializeSessionLog', () => {
       agentPreset: 'minimal',
     })}\n${events.map(event => JSON.stringify(event)).join('\n')}\n`)
   })
+
+  it('retains required prompt-control request input records verbatim', () => {
+    const audit = {
+      type: 'request/input',
+      seq: SessionSeq(0),
+      time: 1,
+      data: {
+        purpose: 'conversation', turn: 1, step: 1, attempt: 1,
+        profileId: 'profile-1', profileRevision: 0, ruleIds: [],
+        provider: 'mock', model: 'mock', messages: [],
+      },
+    } as unknown as SessionEvent
+    const text = SessionLogExport.serializeSessionLog(header('audit-export'), [audit])
+    expect(JSON.parse(text.trim().split('\n')[1] as string)).toEqual(audit)
+  })
 })
 
 describe('readSessionLogText', () => {
@@ -311,6 +326,29 @@ describe('session.export download endpoint', () => {
     const files = unzipSync(await responseBytes(response))
     expect(Object.keys(files)).toEqual([exportLogName])
     expect(strFromU8(files[exportLogName] as Uint8Array)).toBe(logText(stored))
+  })
+
+  it('retains required prompt-control request input records in the downloaded ZIP', async () => {
+    const audit = {
+      type: 'request/input',
+      seq: SessionSeq(0),
+      time: 1,
+      data: {
+        purpose: 'conversation', turn: 1, step: 1, attempt: 1,
+        profileId: 'profile-1', profileRevision: 0, ruleIds: [],
+        provider: 'mock', model: 'mock', messages: [],
+      },
+    } as unknown as SessionEvent
+    const api = await buildApi({ 'session-root': log('session-root', undefined, [audit]) })
+    const response = await toFetchHandler(api).fetch(
+      new Request('http://host/api/session.export?sessionId=session-root'),
+    )
+    const files = unzipSync(await responseBytes(response))
+    const rows = strFromU8(files[exportLogName] as Uint8Array).trim().split('\n').map((row) => {
+      const parsed: unknown = JSON.parse(row)
+      return parsed
+    })
+    expect(rows[1]).toEqual(audit)
   })
 
   it('preflights root preparation through HEAD without streaming a body', async () => {

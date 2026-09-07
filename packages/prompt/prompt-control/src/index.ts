@@ -81,6 +81,39 @@ export interface PromptControlRequestInput {
   readonly tools?: readonly ToolSchema[]
 }
 
+/** Combined read-only source view for prompt contributions and registered tools. */
+export interface PromptControlCatalog extends PromptCatalog {
+  /** Tool registrations visible to the assembly scope, when the tool runtime is mounted. */
+  readonly tools: PromptControlToolCatalog
+}
+
+const EMPTY_TOOL_CATALOG: PromptControlToolCatalog = Object.freeze({ tools: Object.freeze([]) })
+
+/** Minimal optional runtime contract; Prompt Control must not depend on the tool implementation. */
+interface ToolCatalogRuntime {
+  catalog(scope?: AssembleContext['scope'], options?: CatalogOptions): PromptControlToolCatalog
+}
+
+/** Tool catalog provenance, kept structural so the tools integration remains optional. */
+export interface PromptControlToolRegistrationSource {
+  readonly ownerPackage: string
+  readonly scope?: AssembleContext['scope']
+}
+
+/** One detached tool schema with its registration provenance. */
+export interface PromptControlToolCatalogEntry {
+  readonly name: string
+  readonly source: PromptControlToolRegistrationSource
+  readonly schema: ToolSchema
+  readonly effective: boolean
+  readonly shadowedBy?: AssembleContext['scope']
+}
+
+/** Tool registrations attached to the Prompt Control source view when mounted. */
+export interface PromptControlToolCatalog {
+  readonly tools: readonly PromptControlToolCatalogEntry[]
+}
+
 declare module '@deepseek-ai/dsh-session/types' {
   interface SessionEventMap {
     /** Required post-projection audit record for one Prompt-Controlled conversation request. */
@@ -133,8 +166,10 @@ export class PromptControl extends Service {
    * @param options - view options, such as including shadowed contributions.
    * @returns the frozen evaluated catalog for the requested scope.
    */
-  catalog(context?: AssembleContext, options?: CatalogOptions): PromptCatalog {
-    return this.ctx.systemPrompt.catalog(context, options)
+  catalog(context?: AssembleContext, options?: CatalogOptions): PromptControlCatalog {
+    const prompt = this.ctx.systemPrompt.catalog(context, options)
+    const tools = (this.ctx.get('tools') as ToolCatalogRuntime | undefined)?.catalog(context?.scope, options) ?? EMPTY_TOOL_CATALOG
+    return Object.freeze({ ...prompt, tools })
   }
 
   /** List compact profile summaries without reading their prompt text. */

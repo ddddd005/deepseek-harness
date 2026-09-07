@@ -8,7 +8,8 @@
 
 import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
-import type { SessionEvent, TurnEndReason } from '@deepseek-ai/dsh-session'
+import type { SdkSessionEvent } from '@deepseek-ai/dsh-sdk-protocol'
+import type { TurnEndReason } from '@deepseek-ai/dsh-session'
 import { createProcessHarnessClient, HarnessClient, isRecord, SdkProtocolError } from './client.ts'
 import type { RuntimeProcessOptions } from './launch.ts'
 import type { ContentBlock, DeepSeekHarnessOptions, HarnessNotification, RunResult, SdkPromptContentBlock } from './types.ts'
@@ -177,7 +178,7 @@ export class HarnessSession {
     await this.harness.start()
     const client = this.harness.client
     const contentBlocks = normalizeInput(input)
-    const events: SessionEvent[] = []
+    const events: SdkSessionEvent[] = []
     const notifications: HarnessNotification[] = []
 
     const subscription = client.subscribeSessionTree(this.id)
@@ -261,7 +262,7 @@ function validatedTurnEndReason(value: unknown): TurnEndReason {
 }
 
 /** Validate the fields in a wire `session.event` envelope before returning the typed result. */
-function validatedSessionEvent(value: unknown): SessionEvent {
+function validatedSessionEvent(value: unknown): SdkSessionEvent {
   if (!isRecord(value) || typeof value.type !== 'string') {
     throw new SdkProtocolError(`session.event carried no event envelope: ${JSON.stringify(value)}`)
   }
@@ -282,7 +283,7 @@ function validatedSessionEvent(value: unknown): SessionEvent {
     }
     validatedTurnEndReason(data.reason)
   }
-  return value as unknown as SessionEvent
+  return value as SdkSessionEvent
 }
 
 /** Whether a raw session event is the durable enqueue receipt for `messageId`. */
@@ -297,7 +298,7 @@ function isInboxReceipt(value: unknown, messageId: string): boolean {
  * @param events - the activity interval's `session.event` payloads in wire order.
  * @returns the final response text, or `''` when no assistant message exists.
  */
-export function finalResponse(events: SessionEvent[]): string {
+export function finalResponse(events: SdkSessionEvent[]): string {
   for (let index = events.length - 1; index >= 0; index--) {
     const event = events[index]
     if (event?.type !== 'assistant/message') continue

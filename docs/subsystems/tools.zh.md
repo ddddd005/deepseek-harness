@@ -525,6 +525,16 @@ restrict(filter: ToolRestriction): () => void
 guard(guard: ToolGuard): () => void
 
 /**
+ * Read the registered tool schemas and their owning plugin/scope. This is a
+ * pre-dispatch registry view: it neither changes a schema nor claims to be
+ * the final Adapter payload.
+ * @param scope - the viewing scope (the agent); omitted = the global view.
+ * @param options - include registrations shadowed by nearer scopes.
+ * @returns detached, frozen catalog entries in deterministic name order.
+ */
+catalog(scope?: ScopeKey, options: ToolCatalogOptions = {}): ToolCatalog
+
+/**
  * Look up a tool as one scope sees it (scoped
  * shadows global; a restricted-away global reads as absent). Presenters pass
  * the calling agent so the rendered card matches the definition that

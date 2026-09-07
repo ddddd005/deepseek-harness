@@ -6,8 +6,7 @@
  */
 
 import type { ContentBlock, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
-import type { SdkPromptContentBlock } from '@deepseek-ai/dsh-sdk-protocol'
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type { SdkPromptContentBlock, SdkSessionEvent } from '@deepseek-ai/dsh-sdk-protocol'
 
 /** One server-to-client notification as received off the wire. */
 export interface HarnessNotification {
@@ -73,7 +72,7 @@ export interface RunResult {
   /** Concatenated text of the interval's last assistant message (empty when none). */
   finalResponse: string
   /** Every `session.event` payload for the root session, in wire order. */
-  events: SessionEvent[]
+  events: SdkSessionEvent[]
   /** Every notification for the root session and discovered descendants, in wire order. */
   notifications: HarnessNotification[]
 }

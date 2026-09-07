@@ -953,6 +953,29 @@ describe('JsonlSessionPersistence: durability and crash semantics', () => {
     await handle.close()
   })
 
+  it('restores required prompt-control request input records from a fresh backend', async () => {
+    const header = meta('request-input-round-trip', '/work')
+    const audit = {
+      type: 'request/input',
+      seq: SessionSeq(0),
+      time: 1,
+      data: {
+        purpose: 'conversation', turn: 1, step: 1, attempt: 1,
+        profileId: 'profile-1', profileRevision: 0, ruleIds: [],
+        provider: 'mock', model: 'mock', messages: [],
+      },
+    } as unknown as SessionEvent
+    await writeLog(ctx.sessionPersistence, header, [audit])
+
+    const restored = new Context()
+    await restored.plugin(JsonlSessionPersistence, { root, compression: 'none' })
+    try {
+      expect((await readAll(restored.sessionPersistence, header.id)).events).toEqual([audit])
+    } finally {
+      await restored.fiber.dispose()
+    }
+  })
+
   it('flush materializes an explicitly durable empty session without an event row', async () => {
     const m = meta('durable-empty', '/work')
     const handle = await ctx.sessionPersistence.create(m)

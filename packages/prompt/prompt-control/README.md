@@ -8,7 +8,7 @@ kind: "package-reference"
 
 ## Summary
 
-`dsh-prompt-control` defines the Prompt Control service (`ctx.promptControl`) for session-scoped prompt management. This increment freezes the read-only surface: `catalog()` delegates to the system-prompt registry and returns the evaluated, provenance-carrying view of the prompt contributions behind one assembly — sections, contexts, and variables, each with its stable branded identity, owner package, scope, placement order, dynamic flag, `complete` claim, and evaluated text. Resolver functions never escape the registry. Prompt profiles, the rule interpreter, and request finalization build on this same service in later increments. Choose it when you need to enumerate what the model was told and where each part came from — not to contribute prompt content, which stays with `dsh-system-prompt`.
+`dsh-prompt-control` defines the Prompt Control service (`ctx.promptControl`) for session-scoped prompt management. `catalog()` returns the evaluated, provenance-carrying view of prompt contributions behind one assembly and, when `dsh-tools` is mounted, the visible registered tool schemas with owner and scope. Profiles finalize selected conversation requests, while `request/input` records the exact post-projection Adapter input. Catalog entries remain pre-dispatch provenance, never evidence of what was sent.
 
 ## Table of Contents
 
@@ -39,6 +39,7 @@ for (const section of catalog.sections) {
 }
 catalog.contexts // the same view for dynamic runtime-context contributions
 catalog.variables // evaluated values plus the same provenance
+catalog.tools.tools // registered tool schemas with owner/scope; absent runtime => []
 ```
 
 Context entries mirror assembly suppression: a view whose runtime context is suppressed lists none. The catalog does not run the `system-prompt/assemble` waterfall and does not enforce a complete section — `complete` is reported as a claim. Resolver evaluation failures propagate exactly as the equivalent assembly would.
@@ -55,13 +56,13 @@ This section explains how the package realizes the behavior above; the observabl
 
 ### Design concept
 
-This increment owns no prompt state. Provenance is captured where the contribution is registered — the system-prompt registry stamps each section, context, and variable with its owner package (the registering caller's Cordis fiber name), scope, and dynamic flag at insertion — so the catalog is a pure read over registered state, not a parallel inventory that could drift. The service delegates the entire contract to `SystemPrompt.catalog` and freezes the signature as the stable seam that profile storage, the rule interpreter, and request finalization build on.
+Provenance is captured where each contribution is registered. The system-prompt registry stamps sections, contexts, and variables; the optional tools runtime stamps registered schemas. Prompt Control only composes those read-only views, so it neither edits schemas nor turns a catalog entry into a claim about the final Adapter payload.
 
 ### Source map
 
 | File | Role |
 |---|---|
-| [`src/index.ts`](src/index.ts) | `PromptControl` service, `catalog()` delegation, public brand and catalog type re-exports |
+| [`src/index.ts`](src/index.ts) | `PromptControl` service, source catalogs, profile persistence, finalization, and request audit |
 
 </details>
 
@@ -83,8 +84,6 @@ The package-level contract is enough for most consumers; read these when you nee
 
 These limits define when the service needs special care. They are current package constraints, not a task backlog.
 
-- **No prompt state of its own yet** — profile storage, session profile selection, and the rule interpreter land behind this same service in later increments; the catalog is the only surface today.
-- **Tool registration sources are not cataloged yet** — tool schemas flow into assembly through the system-prompt tool providers; their source catalog arrives with the request-takeover increment.
 - **The catalog is a pre-waterfall view** — contributions transformed by an assembly waterfall listener are not attributed here; the dispatched request is what the later audit records.
 
 <a id="dev-note"></a>

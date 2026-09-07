@@ -279,6 +279,39 @@ export interface ToolDefinition extends ToolSchema {
   presentResult?(args: unknown, result: ToolResult): ToolResultView | undefined
 }
 
+/** Registration provenance for one tool definition. */
+export interface ToolRegistrationSource {
+  /** Fiber name of the plugin that registered the tool. */
+  readonly ownerPackage: string
+  /** Agent scope that owns this registration; absent for a global tool. */
+  readonly scope?: ScopeKey
+}
+
+/** One read-only tool-registration entry visible to a scope. */
+export interface ToolCatalogEntry {
+  /** Stable tool identity, equal to the model-facing schema name. */
+  readonly name: string
+  /** Registration provenance captured from the calling context. */
+  readonly source: ToolRegistrationSource
+  /** Allowlisted model-facing schema, detached from the registered definition. */
+  readonly schema: ToolSchema
+  /** Whether this registration is visible after scope shadowing and restrictions. */
+  readonly effective: boolean
+  /** Nearer scope whose same-name registration shadows this entry. */
+  readonly shadowedBy?: ScopeKey
+}
+
+/** Options for one read-only {@link ToolRuntime.catalog} view. */
+export interface ToolCatalogOptions {
+  /** Also include registrations shadowed by a nearer scope. */
+  readonly includeShadowed?: boolean
+}
+
+/** Read-only tool registration catalog for one scope. */
+export interface ToolCatalog {
+  readonly tools: readonly ToolCatalogEntry[]
+}
+
 /** The completed outcome handed to {@link ToolDefinition.presentResult}. */
 export interface ToolResult {
   /** The final model-facing content (or the rendered error text on failure). */
@@ -693,6 +726,12 @@ interface ToolView {
   readonly restrictableNames: ReadonlySet<string>
 }
 
+/** One definition plus the caller provenance retained with its registry entry. */
+interface RegisteredTool {
+  readonly definition: ToolDefinition
+  readonly source: ToolRegistrationSource
+}
+
 /**
  * A monotonic execution guard evaluated after every `tools/pre-execute`
  * listener and before the tool body. Returning a reason denies the call;
@@ -705,7 +744,7 @@ export type ToolGuard = (execution: Readonly<ToolExecution>) => string | undefin
 
 /** One scope's complete tool-registry contribution. */
 class ToolLayer implements ScopeLayer {
-  readonly tools: NamedEntries<ToolDefinition>
+  readonly tools: NamedEntries<RegisteredTool>
   readonly restrictions = new AnonymousEntries<CompiledToolRestriction>()
   readonly guards = new AnonymousEntries<ToolGuard>()
   /**
@@ -771,6 +810,11 @@ function resolveMaxParallelSubCalls(value: number | undefined): number {
     throw new Error('maxParallelSubCalls must be a positive integer')
   }
   return maxParallelSubCalls
+}
+
+/** Locale-independent code-unit ordering for catalog entries. */
+function compareCatalogNames(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0
 }
 
 /**
@@ -992,6 +1036,15 @@ export class ToolRuntime extends Service {
     return { schemas, knownNames: [...view.knownNames, RUN_CODE_NAME] }
   }
 
+  /** Capture the traceable caller identity for one tool registration. */
+  private registrationSource(): ToolRegistrationSource {
+    const scope = scopeOf(this.ctx)
+    return Object.freeze({
+      ownerPackage: this.ctx.fiber.name,
+      ...(scope === undefined ? {} : { scope }),
+    })
+  }
+
   /**
    * Resolve the code runtime or throw the actionable misconfiguration error.
    * Read at use time (assembly / run_code execution), NOT via static
@@ -1047,7 +1100,10 @@ export class ToolRuntime extends Service {
     }
     return this.layers.effect(
       this.ctx,
-      layer => layer.tools.insert(name, definition),
+      layer => layer.tools.insert(name, {
+        definition,
+        source: this.registrationSource(),
+      }),
       { label: 'tools.register()' },
     )
   }
@@ -1149,7 +1205,7 @@ export class ToolRuntime extends Service {
     const own = this.layers.peek(scope)
     // Inherited surface, nearest ancestor last: a nearer scope's same-name
     // entry shadows a farther one, and the global layer is the farthest.
-    const inherited = new Map<string, ToolDefinition>(this.layers.global.tools.entries())
+    const inherited = new Map<string, RegisteredTool>(this.layers.global.tools.entries())
     for (const layer of layers) {
       if (layer === own) continue
       for (const [name, definition] of layer.tools.entries()) inherited.set(name, definition)
@@ -1157,19 +1213,19 @@ export class ToolRuntime extends Service {
     const visible = new Map<string, ToolDefinition>()
     const knownNames = new Set<string>()
     const restrictableNames = new Set<string>()
-    for (const [name, definition] of inherited) {
+    for (const [name, registered] of inherited) {
       knownNames.add(name)
       restrictableNames.add(name)
       // Restrictions intersect across the whole chain: any scope on it may
       // mask an inherited name for everything nested inside it.
-      if (layers.every(layer => layer.admits(name))) visible.set(name, definition)
+      if (layers.every(layer => layer.admits(name))) visible.set(name, registered.definition)
     }
     // The scope's own registrations last, shadowing an inherited name and
     // outside the filter above.
     if (own !== undefined) {
-      for (const [name, definition] of own.tools.entries()) {
+      for (const [name, registered] of own.tools.entries()) {
         knownNames.add(name)
-        visible.set(name, definition)
+        visible.set(name, registered.definition)
       }
     }
     // Presentation infrastructure is resolved last and outside capability
@@ -1181,6 +1237,52 @@ export class ToolRuntime extends Service {
       visible.set(RUN_CODE_NAME, this.requireCodeTransport())
     }
     return { visible, knownNames, restrictableNames }
+  }
+
+  /**
+   * Read the registered tool schemas and their owning plugin/scope. This is a
+   * pre-dispatch registry view: it neither changes a schema nor claims to be
+   * the final Adapter payload.
+   * @param scope - the viewing scope (the agent); omitted = the global view.
+   * @param options - include registrations shadowed by nearer scopes.
+   * @returns detached, frozen catalog entries in deterministic name order.
+   */
+  catalog(scope?: ScopeKey, options: ToolCatalogOptions = {}): ToolCatalog {
+    const layers = this.layers.chainLayers(scope)
+    const registrations: Array<{ name: string; registered: RegisteredTool; scope: ScopeKey | undefined }> = [
+      ...[...this.layers.global.tools.entries()].map(([name, registered]) => ({ name, registered, scope: undefined })),
+      ...layers.flatMap(layer => [...layer.tools.entries()].map(([name, registered]) => ({
+        name,
+        registered,
+        scope: registered.source.scope,
+      }))),
+    ]
+    const active = new Map<string, RegisteredTool>(this.layers.global.tools.entries())
+    for (const layer of layers) {
+      for (const [name, registered] of layer.tools.entries()) active.set(name, registered)
+    }
+    const visible = this.view(scope).visible
+    const entries = registrations
+      .filter(({ name, registered }) => {
+        const current = active.get(name)
+        if (current === registered) return visible.get(name) === registered.definition
+        return options.includeShadowed
+      })
+      .map(({ name, registered }) => {
+        const current = active.get(name)
+        const effective = current === registered && visible.get(name) === registered.definition
+        const shadowedBy = current === registered ? undefined : current?.source.scope
+        return Object.freeze({
+          name,
+          source: registered.source,
+          schema: deepFreeze({ ...this.schemaOf(registered.definition, true), name }),
+          effective,
+          ...(shadowedBy === undefined ? {} : { shadowedBy }),
+        })
+      })
+      .sort((left, right) => compareCatalogNames(left.name, right.name)
+        || compareCatalogNames(left.source.ownerPackage, right.source.ownerPackage))
+    return Object.freeze({ tools: Object.freeze(entries) })
   }
 
   /**

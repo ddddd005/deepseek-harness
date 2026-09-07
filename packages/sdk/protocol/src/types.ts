@@ -8,7 +8,7 @@
  * @module @deepseek-ai/dsh-sdk-protocol/types
  */
 
-import type { ContentBlock, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, Message, ReasoningEffortId, ToolSchema } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { SubagentStopReason } from '@deepseek-ai/dsh-subagent'
 
@@ -52,6 +52,34 @@ export interface SdkEncodedImageBlock {
 /** SDK prompt input: ordinary durable blocks plus inline images awaiting admission. */
 export type SdkPromptContentBlock = ContentBlock | SdkEncodedImageBlock
 
+/** SDK-visible payload of Prompt Control's durable adapter-input audit event. */
+export interface PromptControlRequestInput {
+  readonly purpose: 'conversation'
+  readonly turn: number
+  readonly step: number
+  readonly attempt: number
+  readonly basePresetId?: string
+  readonly profileId: string
+  readonly profileRevision: number
+  readonly ruleIds: readonly string[]
+  readonly provider: string
+  readonly model: string
+  readonly system?: string
+  readonly messages: readonly Message[]
+  readonly tools?: readonly ToolSchema[]
+}
+
+/**
+ * One SDK session-log event. The protocol owns this union so SDK consumers can
+ * inspect Prompt Control audit records without importing a fork-private plugin.
+ */
+export type SdkSessionEvent = SessionEvent | (
+  Omit<SessionEvent, 'type' | 'data'> & {
+    type: 'request/input'
+    data: PromptControlRequestInput
+  }
+)
+
 /** Durable enqueue receipt for one prompt. */
 export interface SessionPromptResult {
   /** Identity of the queued user message. */
@@ -66,7 +94,7 @@ export interface SessionEventNotification {
   /** Session the event belongs to (every session in the runtime, not only SDK-created ones). */
   sessionId: string
   /** The full session-log event envelope. */
-  event: SessionEvent
+  event: SdkSessionEvent
 }
 
 /** Whole-agent lifecycle state for one session. */
