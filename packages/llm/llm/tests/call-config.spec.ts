@@ -6,7 +6,13 @@
 
 import { describe, expect, it } from 'vitest'
 import { deepFreeze } from '@deepseek-ai/dsh-util-values'
-import { callConfigEquals, isAgentLoopRequest, markAgentLoopRequest } from '../src/call-config.ts'
+import {
+  agentLoopRequestContext,
+  callConfigEquals,
+  isAgentLoopRequest,
+  markAgentLoopRequest,
+  stampAgentLoopRequestAttempt,
+} from '../src/call-config.ts'
 import { ReasoningEffortId } from '../src/brand.ts'
 import type { GenerateOptions } from '../src/types.ts'
 
@@ -98,5 +104,37 @@ describe('agent-loop request identity', () => {
     expect(markAgentLoopRequest(request)).toBe(request)
     expect(isAgentLoopRequest(request)).toBe(true)
     expect(isAgentLoopRequest(copy)).toBe(false)
+  })
+
+  it('retains assembly facts outside the Adapter request and adds the attempt before dispatch', () => {
+    const request: GenerateOptions = { provider: 'mock', model: 'model', messages: [] }
+    markAgentLoopRequest(request, {
+      turn: 3,
+      step: 2,
+      prompt: {
+        scope: {},
+        sections: [{ name: 'base', text: 'base text' }],
+        variables: { workspace: 'D:/repo' },
+      },
+    })
+    stampAgentLoopRequestAttempt(request, 4)
+
+    expect(agentLoopRequestContext(request)).toMatchObject({
+      turn: 3,
+      step: 2,
+      attempt: 4,
+      prompt: { sections: [{ name: 'base', text: 'base text' }] },
+    })
+    expect(request).not.toHaveProperty('prompt')
+    expect(() => { stampAgentLoopRequestAttempt(request, 5) }).toThrow(/already stamped/)
+
+    const invalid: GenerateOptions = { provider: 'mock', model: 'model', messages: [] }
+    markAgentLoopRequest(invalid, {
+      turn: 1,
+      step: 1,
+      prompt: { scope: {}, sections: [], variables: {} },
+    })
+    expect(() => { stampAgentLoopRequestAttempt(invalid, 0) }).toThrow(/positive safe integer/)
+    expect(() => { stampAgentLoopRequestAttempt(invalid, Number.NaN) }).toThrow(/positive safe integer/)
   })
 })

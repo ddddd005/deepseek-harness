@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import LlmRuntime, { createUserMessage, LlmError, ReasoningEffortId  } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { agentLoopRequestContext, createUserMessage, LlmError, ReasoningEffortId  } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmModelReasoningInfo, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
 import SessionStore, { Session, SessionId, foldRequestHeader } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
@@ -73,6 +73,28 @@ function registerEcho(ctx: Context) {
 }
 
 describe('request stability across the loop', () => {
+  it('attaches post-assembly facts and the exact attempt outside the Adapter request', async () => {
+    const adapter = new MockAdapter([textResponse('done')])
+    const ctx = await harness(adapter)
+    let observed: ReturnType<typeof agentLoopRequestContext>
+    ctx.on('llm/stream', (request, next) => {
+      observed = agentLoopRequestContext(request)
+      return next()
+    })
+    const agent = await ctx.agentLoop.create(SessionId('metadata'), { provider: 'mock', model: 'mock' })
+
+    send(agent, 'go')
+    await waitForIdle(ctx, agent)
+
+    expect(observed).toMatchObject({
+      turn: 1,
+      step: 1,
+      attempt: 1,
+    })
+    expect(observed?.prompt.sections).toContainEqual({ name: 'deployment:persona', text: 'stable base' })
+    expect(adapter.requests[0]).not.toHaveProperty('prompt')
+  })
+
   it('each step request within a turn append-extends the previous, frozen end to end', async () => {
     const adapter = new MockAdapter([
       toolCallResponse('c1', 'echo', { text: 'one' }, 'first'),
@@ -537,6 +559,13 @@ describe('request stability across the loop', () => {
       provider: 'mock',
       model: 'mock',
     })
+    const contexts: NonNullable<ReturnType<typeof agentLoopRequestContext>>[] = []
+    ctx.on('llm/stream', (request, next) => {
+      const context = agentLoopRequestContext(request)
+      if (context === undefined) throw new Error('agent-loop request has no process-local context')
+      contexts.push(context)
+      return next()
+    })
     ctx.on('agent/request-error', async ({ agent: subject }) => {
       const first = subject.session.surface.nodes[0]
       if (first === undefined) throw new Error('request has no surface message to compact')
@@ -557,6 +586,13 @@ describe('request stability across the loop', () => {
     expect(adapter.requests[1]?.messages[0]?.content).toContainEqual({
       type: 'text', text: '[summary for retry]',
     })
+    expect(contexts.map(context => ({ turn: context.turn, step: context.step, attempt: context.attempt }))).toEqual([
+      { turn: 1, step: 1, attempt: 1 },
+      { turn: 1, step: 1, attempt: 2 },
+    ])
+    expect(contexts[0]?.prompt.scope).toBe(contexts[1]?.prompt.scope)
+    expect(contexts[0]?.prompt.sections).toContainEqual({ name: 'deployment:persona', text: 'stable base' })
+    expect(adapter.requests.every(request => !('prompt' in request))).toBe(true)
     expect(agent.session.snapshotEvents().flatMap(event =>
       event.type === 'request/header' ? [event.data.reason] : [])).toEqual(['initial', 'series'])
   })

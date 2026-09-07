@@ -47,8 +47,14 @@ export * from './assistant-stream.ts'
 export * from './message.ts'
 export * from './retry-policy.ts'
 export { BlockAssembler } from './assembler.ts'
-export { callConfigEquals, isAgentLoopRequest, markAgentLoopRequest } from './call-config.ts'
-export type { LlmCallConfig, LlmCallConfigAdapterDefaults } from './call-config.ts'
+export {
+  agentLoopRequestContext,
+  callConfigEquals,
+  isAgentLoopRequest,
+  markAgentLoopRequest,
+  stampAgentLoopRequestAttempt,
+} from './call-config.ts'
+export type { AgentLoopPromptAssemblyContext, AgentLoopRequestContext, LlmCallConfig, LlmCallConfigAdapterDefaults } from './call-config.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {

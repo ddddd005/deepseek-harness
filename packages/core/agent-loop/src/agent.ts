@@ -16,12 +16,13 @@ import type {
   RequestErrorAction,
 } from '@deepseek-ai/dsh-agent'
 import { Inbox, agentEvents, assembleContextFor } from '@deepseek-ai/dsh-agent'
-import type { GenerateOptions, LlmCallConfig, Message, PreparedLlmCall } from '@deepseek-ai/dsh-llm'
+import type { AgentLoopPromptAssemblyContext, GenerateOptions, LlmCallConfig, Message, PreparedLlmCall } from '@deepseek-ai/dsh-llm'
 import {
   LlmError,
   createAssistantMessage,
   errorChain,
   markAgentLoopRequest,
+  stampAgentLoopRequestAttempt,
 } from '@deepseek-ai/dsh-llm'
 import { deepFreeze } from '@deepseek-ai/dsh-util-values'
 import type { Scope } from '@deepseek-ai/dsh-scope'
@@ -353,7 +354,7 @@ export class ReactLoopAgent implements Agent {
       const { request, preparedCall } = await this.buildRequest(
         turn,
         step,
-        assembly.tools,
+        assembly,
         system,
         this.session.deriveMessages(),
         startsRequestSeries,
@@ -361,9 +362,11 @@ export class ReactLoopAgent implements Agent {
         signal,
       )
       startsRequestSeries = false
+      const attempt = ++this.assistantAttemptCounter
+      stampAgentLoopRequestAttempt(request, attempt)
       const live = new AssistantStreamAttempt(
         this.session.id,
-        ++this.assistantAttemptCounter,
+        attempt,
         () => ++this.assistantStreamRevision,
         turn,
         step,
@@ -488,7 +491,7 @@ export class ReactLoopAgent implements Agent {
   private async buildRequest(
     turn: number,
     step: number,
-    tools: GenerateOptions['tools'] & object,
+    assembly: PromptAssembly,
     system: string,
     boundaryMessages: Message[],
     startsRequestSeries: boolean,
@@ -543,7 +546,7 @@ export class ReactLoopAgent implements Agent {
       config,
       ...preparedCall === undefined ? {} : { adapterDefaults: preparedCall.adapterDefaults },
       ...system ? { system } : {},
-      ...tools.length > 0 ? { tools } : {},
+      ...assembly.tools.length > 0 ? { tools: assembly.tools } : {},
     })
     const baseline = this.session.requestHeader()
     const startsSeries = startsRequestSeries
@@ -583,7 +586,20 @@ export class ReactLoopAgent implements Agent {
       ...header.tools !== undefined ? { tools: header.tools } : {},
       sessionId: this.session.id,
       signal,
-    }))
+    }), {
+      turn,
+      step,
+      prompt: freezePromptAssemblyContext(this, assembly),
+    })
     return { request, ...preparedCall === undefined ? {} : { preparedCall } }
   }
+}
+
+/** Snapshot post-waterfall prompt facts without inserting internal data into the Adapter request. */
+function freezePromptAssemblyContext(scope: object, assembly: PromptAssembly): AgentLoopPromptAssemblyContext {
+  return Object.freeze({
+    scope,
+    sections: Object.freeze(assembly.sections.map(section => Object.freeze({ name: section.name, text: section.text }))),
+    variables: Object.freeze({ ...assembly.variables }),
+  })
 }
