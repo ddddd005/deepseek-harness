@@ -118,6 +118,8 @@ export interface CordisCatalogPolicy {
   readonly typeLinkExemptions: Readonly<Record<string, string>>
   /** Framework Services included in the model-facing runtime catalog but not the harness documentation partition. */
   readonly runtimeServices?: readonly ServiceEntry[]
+  /** Repository source prefixes whose services stay out of the documentation catalog (fork-private packages). */
+  readonly excludedServiceSourcePrefixes?: readonly string[]
   /** Harness Services omitted from the model-facing runtime catalog because dynamic Plugins must not call them. */
   readonly runtimeServiceExclusions?: ReadonlySet<string>
   /** Manually curated framework events inherited by every plugin. */
@@ -258,6 +260,8 @@ export class CordisCatalogProjector {
     const chosen = new Map<string, ServiceModel>()
     for (const packageModel of this.face.packages) {
       for (const service of packageModel.services) {
+        // Fork-private packages stay out of the documentation catalog entirely.
+        if (this.policy.excludedServiceSourcePrefixes?.some(prefix => service.location.file.startsWith(prefix))) continue
         const declaration = this.renderer.declaration(service.symbol)
         const owner = /^packages\/[^/]+\/[^/]+\/src\//.exec(service.location.file)?.[0]
         if ((declaration.kind !== 'class' && declaration.kind !== 'interface')

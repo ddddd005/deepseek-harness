@@ -26,6 +26,7 @@
     "clean": "tsx scripts/clean.ts",
     "change-scope": "tsx scripts/change-scope.ts",
     "typecheck": "npm run build:lib:host && npm run typecheck:contracts-ready",
+    "check:fork-prompt": "tsc -b packages/prompt/prompt-control && pnpm exec oxlint packages/prompt && pnpm exec vitest run packages/prompt && pnpm run verify-package-invariants",
     "typecheck:contracts-ready": "tsc -b tsconfig.client.json",
     "lint": "npm run build:lib:host && npm run lint:contracts-ready",
     "lint:contracts-ready": "tsx scripts/run-oxlint.ts .",

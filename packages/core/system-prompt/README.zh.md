@@ -79,7 +79,7 @@ ctx.systemPrompt.variable('cwd', ({ agent }) => agent?.session.header.cwd)
 
 ### 读取贡献 catalog
 
-`catalog(context, options)` 返回请求 scope 一次组装背后各贡献的已求值只读视图：section、context 与 variable，每条携带稳定品牌标识（`PromptContributionId`，等于注册名）、owner 包、scope、位置 order、动态标记、已求值文本，以及——对 section——`complete` 声明。默认视图只列出生效贡献；`includeShadowed: true` 附加已注册但被遮蔽的条目，标记为 `effective: false` 并指明顶掉它的更近 scope。该视图止步于组装之前：不运行 `system-prompt/assemble` waterfall、不强制 complete section，resolver 函数也永不外泄。冻结该接口的服务见 [prompt-control 包](../../packages/prompt/prompt-control/README.zh.md)。
+`catalog(context, options)` 返回请求 scope 一次组装背后各贡献的已求值只读视图：section、context 与 variable，每条携带稳定品牌标识（`PromptContributionId`，等于注册名）、owner 包、scope、位置 order、动态标记、已求值文本，以及——对 section——`complete` 声明。默认视图只列出生效贡献；`includeShadowed: true` 附加已注册但被遮蔽的条目，标记为 `effective: false` 并指明顶掉它的更近 scope。该视图止步于组装之前：不运行 `system-prompt/assemble` waterfall、不强制 complete section，resolver 函数也永不外泄。冻结该接口的服务见 [prompt-control 包](../../prompt/prompt-control/README.md)。
 
 -----
 

@@ -7,6 +7,7 @@
 import { existsSync, globSync, readFileSync } from 'node:fs'
 import { dirname, relative, resolve, sep } from 'node:path'
 import ts from 'typescript'
+import { isForkPrivatePath } from './fork-private-packages.ts'
 import { usesFlattenedPackageDependencies } from './package-dependency-policy.ts'
 
 /** Package README sentence that records why an invariant companion is omitted. */
@@ -192,6 +193,7 @@ function checkOmissionReason(
   root: string,
   violations: PackageInvariantViolation[],
 ): void {
+  if (isForkPrivatePath(root, owner.dir)) return
   const readmePath = `${owner.dir}/README.md`
   const absolutePath = resolve(root, readmePath)
   if (!existsSync(absolutePath) || !OMITTED_COMPANION_REASON.test(readFileSync(absolutePath, 'utf8'))) {

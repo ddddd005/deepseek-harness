@@ -7,6 +7,7 @@
 
 import { existsSync, globSync, readFileSync } from 'node:fs'
 import { relative, resolve, sep } from 'node:path'
+import { forkPrivatePackageDirs } from './fork-private-packages.ts'
 import { markdownHeadingLines, markdownProseLines, type MarkdownProseLine } from './markdown.ts'
 
 const root = resolve(import.meta.dirname, '..')
@@ -35,7 +36,6 @@ const NO_MODEL_EXPERIENCE_SECTION: Readonly<Record<string, string>> = {
   'packages/util/home-paths': 'The package only resolves harness-owned host paths; model-facing consumers own any rendered use.',
   'packages/util/launch-environment': 'The package only resolves host environment values; model-facing consumers own any rendered use.',
   'packages/util/workspace-path': 'The package only formats Workspace paths for browser UI; it never constructs model input.',
-  'packages/prompt/prompt-control': 'The service owns no prompt state; the catalog is a read-only view over dsh-system-prompt, which owns every model-facing behavior.',
   'packages/util/values': 'The package only validates, snapshots, compares, freezes, or rejects caller-owned values; consumers own every model-facing use.',
 }
 
@@ -269,7 +269,11 @@ for (const line of readFileSync(resolve(root, 'docs/tool-catalog.md'), 'utf8').s
 }
 
 const failures: Failure[] = []
-const packageJsons = globSync('packages/*/*/package.json', { cwd: root }).map(path => path.split(sep).join('/')).sort()
+const forkPrivate = forkPrivatePackageDirs(root)
+const packageJsons = globSync('packages/*/*/package.json', { cwd: root })
+  .map(path => path.split(sep).join('/'))
+  .filter(rel => !forkPrivate.has(rel.slice(0, -'/package.json'.length)))
+  .sort()
 const scannedPackages = new Set(packageJsons.map(path => path.slice(0, -'/package.json'.length)))
 let structuredCount = 0
 let modelContextEntryCount = 0

@@ -7,6 +7,7 @@
 
 import { existsSync, globSync, readFileSync } from 'node:fs'
 import { resolve, sep } from 'node:path'
+import { forkPrivatePackageDirs } from './fork-private-packages.ts'
 import { markdownHeadingLines, markdownProseLines } from './markdown.ts'
 
 const root = resolve(import.meta.dirname, '..')
@@ -30,7 +31,11 @@ function isLimitationsLike(headingText: string): boolean {
   )
 }
 
-const packageJsons = globSync('packages/*/*/package.json', { cwd: root }).map(path => path.split(sep).join('/')).sort()
+const forkPrivate = forkPrivatePackageDirs(root)
+const packageJsons = globSync('packages/*/*/package.json', { cwd: root })
+  .map(path => path.split(sep).join('/'))
+  .filter(rel => !forkPrivate.has(rel.slice(0, -'/package.json'.length)))
+  .sort()
 const scannedPackages = new Set(packageJsons.map(path => path.slice(0, -'/package.json'.length)))
 const failures: string[] = []
 

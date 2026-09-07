@@ -1387,19 +1387,6 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     ],
   },
   {
-    key: 'promptControl',
-    summary: 'Session-scoped prompt management.',
-    description: 'Session-scoped prompt management.\n\nThe service owns no prompt state in this increment: it exposes the system-prompt registry\'s evaluated read-only catalog under a frozen signature that profile storage, the rule interpreter, and request finalization build on.',
-    methods: [
-      {
-        signature: 'catalog(context?: AssembleContext, options?: CatalogOptions): PromptCatalog',
-        description: 'The evaluated, read-only view of the prompt contributions behind one assembly of the requested scope. Delegates to `SystemPrompt.catalog`, which owns the contract: per-contribution provenance, placement order, dynamic flag, and `complete` claim; effective entries only unless `includeShadowed` is requested; resolver functions never escape.',
-        parameters: [{ name: 'context', description: 'the scope and plugin-defined fields used to evaluate resolvers.' }, { name: 'options', description: 'view options, such as including shadowed contributions.' }],
-        returns: 'the frozen evaluated catalog for the requested scope.',
-      },
-    ],
-  },
-  {
     key: 'sandbox',
     summary: 'Abstract process-sandbox service.',
     description: 'Abstract process-sandbox service. confine must return enforcing argv or fail closed at wrap or runner-execution time; silent unconfined passthrough is forbidden. Functional probes arbitrate multi-runner chains and may be skipped for a sole candidate, whose own refusal remains the fail-closed end.',

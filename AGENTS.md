@@ -152,3 +152,7 @@ Docs accompany every code change: update affected README and JSDoc contracts tog
 ## Vendoring policy
 
 `vendor/` packages are pinned source copies (manifest with upstream SHAs in [vendor/README.md](vendor/README.md)). Update via the sync procedure there; re-apply or retire the logged local modifications; rerun `pnpm run test && pnpm run build`.
+
+## Fork-local policy: private prompt packages
+
+`packages/prompt/**` (see `scripts/fork-private-packages.json`) is this fork's private capability. Leaf documentation gates exempt it mechanically — bilingual README pairing, the package-README Model Experience and Known Limitations rules, the invariant-companion README sentence, and generated catalog/subsystem-page mapping — while TypeScript, lint, tests, dependency graphs, and runtime service checks still apply in full. Do not add in-repo documentation for these packages or reintroduce their README pairs; project documentation lives outside the repository, and deferred obligations are logged in the fork's external notes. Never bypass Git hooks with `--no-verify`; when a documentation gate would block a fork-only commit, fix the gate input or adjust the leaf verifier's exemption, and validate with `pnpm run check:fork-prompt`.

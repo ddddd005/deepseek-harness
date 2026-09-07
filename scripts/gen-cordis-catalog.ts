@@ -54,6 +54,8 @@ export { REGION_BEGIN, REGION_END }
  * errors, so the partition can never silently drift from the service API.
  */
 export const SERVICE_PAGE: Record<string, string> = {
+  // No prompt-control entry: fork-private packages never reach the generated
+  // catalogs (CORDIS_CATALOG_POLICY.excludedServiceSourcePrefixes).
   agentLoop: 'core.md',
   agentDefaultModel: 'core.md',
   agentPresets: 'core.md',
@@ -108,7 +110,6 @@ export const SERVICE_PAGE: Record<string, string> = {
   subagentModelSelection: 'subagent.md',
   subagents: 'subagent.md',
   subprocess: 'subprocess.md',
-  promptControl: 'system-prompt.md',
   systemPrompt: 'system-prompt.md',
   jobs: 'jobs.md',
   sessionTelemetry: 'session-telemetry.md',
@@ -146,6 +147,7 @@ export const SERVICE_PAGE: Record<string, string> = {
  * to a model as `cordis_runtime_inspect what:"client"`).
  */
 export const SERVICE_WALK_EXEMPTIONS: Record<string, string> = {
+  promptControl: 'fork-private package: excluded from the generated catalogs via CORDIS_CATALOG_POLICY.excludedServiceSourcePrefixes — packages/prompt/prompt-control owns its contract',
   agent: 'not a service: the DX accessor field on Agent.ctx (root accessor defaulting to undefined) — docs/subsystems/core.md owns the Agent handle',
   appReady: 'not a service: launcher-provided successful-startup signal — packages/boot/cmdline/README.md owns the launcher contract',
   appExit: 'not a service: launcher-provided bounded process-exit callback — packages/boot/cmdline/README.md owns the launcher contract',
@@ -763,6 +765,7 @@ export const TYPE_LINK_EXEMPTIONS: Readonly<Record<string, string>> = {
 
 /** Repository data policy consumed by the Cordis catalog projector. */
 export const CORDIS_CATALOG_POLICY: CordisCatalogPolicy = {
+  excludedServiceSourcePrefixes: ['packages/prompt/prompt-control/', 'packages/prompt/prompt-control-basic/'],
   linkedTypePages: LINK_MAP,
   foundationTypeNames: FOUNDATION_TYPE_NAMES,
   typeLinkExemptions: TYPE_LINK_EXEMPTIONS,

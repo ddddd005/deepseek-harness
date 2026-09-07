@@ -91,30 +91,6 @@ interface PromptContext {
 
 Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnpm run verify-cordis-catalog` in doc-sync; regenerate with `pnpm run gen-cordis-catalog`) — the language sides differ only in locale-specific paired document paths. Signature blocks use a `ts cordis-catalog` fence and keep the original source JSDoc; dispatch modes are defined in the [primer](../cordis-primer.zh.md#dispatch-modes), and the framework-inherited `ctx` API lives in [cordis-api/inherited.md](../cordis-api/inherited.md).
 
-<a id="ctxpromptcontrol--promptcontrol"></a>
-
-### `ctx.promptControl` — `PromptControl`
-
-Session-scoped prompt management.
-
-The service owns no prompt state in this increment: it exposes the system-prompt registry's evaluated read-only catalog under a frozen signature that profile storage, the rule interpreter, and request finalization build on.
-
-```ts cordis-catalog
-/**
- * The evaluated, read-only view of the prompt contributions behind one
- * assembly of the requested scope. Delegates to `SystemPrompt.catalog`,
- * which owns the contract: per-contribution provenance, placement order,
- * dynamic flag, and `complete` claim; effective entries only unless
- * `includeShadowed` is requested; resolver functions never escape.
- * @param context - the scope and plugin-defined fields used to evaluate resolvers.
- * @param options - view options, such as including shadowed contributions.
- * @returns the frozen evaluated catalog for the requested scope.
- */
-catalog(context?: AssembleContext, options?: CatalogOptions): PromptCatalog
-```
-
-Source: [`packages/prompt/prompt-control/src/index.ts`](../../packages/prompt/prompt-control/src/index.ts)
-
 <a id="ctxsystemprompt--systemprompt"></a>
 
 ### `ctx.systemPrompt` — `SystemPrompt`

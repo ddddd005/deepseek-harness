@@ -6,6 +6,7 @@
 
 import { existsSync, globSync, readFileSync } from 'node:fs'
 import { resolve, sep } from 'node:path'
+import { forkPrivatePackageDirs } from './fork-private-packages.ts'
 import { parseMarkdown, visitMarkdown } from './markdown.ts'
 
 const root = resolve(import.meta.dirname, '..')
@@ -72,6 +73,13 @@ export function auditSubsystemPages(
   const readmes = globSync('packages/*/README.md', { cwd: scanRoot }).map(normalize).sort()
   const manifests = globSync('packages/*/*/package.json', { cwd: scanRoot }).map(normalize).sort()
   const groups = new Set([...readmes, ...manifests].map(groupOf))
+  // Fork-private packages carry no standalone subsystem page; a group whose
+  // every member is private inherits that exemption from the fork manifest.
+  const forkPrivate = forkPrivatePackageDirs(scanRoot)
+  for (const group of new Set([...manifests].map(groupOf))) {
+    const members = manifests.filter(manifest => groupOf(manifest) === group)
+    if (members.every(member => forkPrivate.has(member.slice(0, -'/package.json')))) groups.delete(group)
+  }
   const violations: string[] = []
   let linked = 0
   let exempt = 0
