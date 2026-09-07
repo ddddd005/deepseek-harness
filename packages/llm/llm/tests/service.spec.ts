@@ -575,6 +575,18 @@ describe('LlmRuntime', () => {
     for await (const _chunk of ctx.llm.stream({ provider: 'test', model: 'test', messages: [] })) break
   })
 
+  it('releases a request closed before its first next call', async () => {
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    ctx.llm.registerAdapter(['test'], new ScriptedAdapter(SCRIPT))
+    const options: GenerateOptions = { provider: 'test', model: 'test', messages: [] }
+
+    const iterator = ctx.llm.stream(options)[Symbol.asyncIterator]()
+    await iterator.return?.()
+
+    await expect(collect(ctx.llm.stream(options))).resolves.toEqual(SCRIPT)
+  })
+
   it('unregisters adapters when the owning fiber is disposed (HMR safety)', async () => {
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)

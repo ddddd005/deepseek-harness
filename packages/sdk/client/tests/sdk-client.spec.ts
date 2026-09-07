@@ -104,7 +104,18 @@ describe('DeepSeekHarness', () => {
             data: {
               purpose: 'conversation', turn: 1, step: 1, attempt: 1,
               profileId: 'profile-1', profileRevision: 0, ruleIds: [],
-              provider: 'mock', model: 'mock', messages: [],
+              provider: 'mock', model: 'mock',
+              messages: [{
+                id: 'request-only',
+                role: 'user',
+                content: [],
+                source: {
+                  kind: 'prompt-control',
+                  profileId: 'profile-1',
+                  profileRevision: 0,
+                  ruleId: 'rule-1',
+                },
+              }],
             },
           },
         },
@@ -136,6 +147,7 @@ describe('DeepSeekHarness', () => {
     expect(result.events.map(event => event.type)).toEqual(['agent/inbox/spliced', 'request/input'])
     const audit = result.events.find(event => event.type === 'request/input')
     expect(audit?.data.profileId).toBe('profile-1')
+    expect(audit?.data.messages[0]?.source.kind).toBe('prompt-control')
     expect(closed).toBe(true)
   })
 

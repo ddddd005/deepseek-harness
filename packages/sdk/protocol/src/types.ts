@@ -52,6 +52,19 @@ export interface SdkEncodedImageBlock {
 /** SDK prompt input: ordinary durable blocks plus inline images awaiting admission. */
 export type SdkPromptContentBlock = ContentBlock | SdkEncodedImageBlock
 
+/** Prompt Control provenance carried by a transient request-only audit message. */
+export interface PromptControlMessageSource {
+  readonly kind: 'prompt-control'
+  readonly profileId: string
+  readonly profileRevision: number
+  readonly ruleId: string
+}
+
+/** One message that can appear in Prompt Control's adapter-input audit record. */
+export type PromptControlRequestInputMessage = Message | (
+  Omit<Message, 'source'> & { readonly source: PromptControlMessageSource }
+)
+
 /** SDK-visible payload of Prompt Control's durable adapter-input audit event. */
 export interface PromptControlRequestInput {
   readonly purpose: 'conversation'
@@ -65,7 +78,7 @@ export interface PromptControlRequestInput {
   readonly provider: string
   readonly model: string
   readonly system?: string
-  readonly messages: readonly Message[]
+  readonly messages: readonly PromptControlRequestInputMessage[]
   readonly tools?: readonly ToolSchema[]
 }
 

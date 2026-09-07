@@ -1196,16 +1196,50 @@ export class LlmRuntime extends TypertRemoteService {
   }
 
   /** Release one waterfall-scoped replacement after every stream exit path. */
-  private async * releaseStreamRequest(
+  private releaseStreamRequest(
     options: GenerateOptions,
     stream: AsyncIterable<StreamChunk>,
-  ): AsyncGenerator<StreamChunk> {
-    try {
-      yield * stream
-    } finally {
-      this.activeStreamRequests.delete(options)
-      this.streamReplacements.delete(options)
-      this.streamDispatchAudits.delete(options)
+  ): AsyncIterable<StreamChunk> {
+    const iterator = stream[Symbol.asyncIterator]()
+    let released = false
+    const release = (): void => {
+      if (!released) {
+        released = true
+        this.activeStreamRequests.delete(options)
+        this.streamReplacements.delete(options)
+        this.streamDispatchAudits.delete(options)
+      }
+    }
+    return {
+      [Symbol.asyncIterator](): AsyncIterator<StreamChunk> {
+        return {
+          next: async (): Promise<IteratorResult<StreamChunk>> => {
+            try {
+              const item = await iterator.next()
+              if (item.done) release()
+              return item
+            } catch (error) {
+              release()
+              throw error
+            }
+          },
+          return: async (value?: StreamChunk): Promise<IteratorResult<StreamChunk>> => {
+            try {
+              return await iterator.return?.(value) ?? { done: true, value }
+            } finally {
+              release()
+            }
+          },
+          throw: async (error?: unknown): Promise<IteratorResult<StreamChunk>> => {
+            try {
+              if (iterator.throw) return await iterator.throw(error)
+              throw error
+            } finally {
+              release()
+            }
+          },
+        }
+      },
     }
   }
 }
