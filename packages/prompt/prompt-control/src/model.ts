@@ -110,6 +110,26 @@ export interface PromptProfileSummary {
   readonly updatedAt: number
 }
 
+/** The user-supplied fields used to create one profile. */
+export interface PromptProfileCreate {
+  /** Human-facing name. */
+  readonly name: string
+  /** Optional human-facing description. */
+  readonly description?: string
+  /** Initial rule collection; defaults to empty. */
+  readonly rules?: readonly PromptRule[]
+}
+
+/** Fields an optimistic profile write may replace. */
+export interface PromptProfileUpdate {
+  /** New human-facing name, when changed. */
+  readonly name?: string
+  /** New description; `null` removes it. */
+  readonly description?: string | null
+  /** Entire replacement rule collection, when changed. */
+  readonly rules?: readonly PromptRule[]
+}
+
 /** One session's durable prompt-profile selection. */
 export interface SessionPromptSelection {
   /** The selected session. */
