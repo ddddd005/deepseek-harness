@@ -592,6 +592,17 @@ Source: [`packages/core/session/src/types.ts:352`](../packages/core/session/src/
 
 Source: [`packages/core/session/src/types.ts:342`](../packages/core/session/src/types.ts)
 
+<a id="requestinput--log-only"></a>
+
+#### `request/input` — log-only
+
+```ts persistence-catalog
+/** Required post-projection audit record for one Prompt-Controlled conversation request. */
+'request/input': PromptControlRequestInput
+```
+
+Source: [`packages/prompt/prompt-control/src/index.ts:87`](../packages/prompt/prompt-control/src/index.ts)
+
 ### `sandbox/*`
 
 <a id="sandboxmode--log-only"></a>

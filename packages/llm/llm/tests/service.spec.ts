@@ -1187,6 +1187,41 @@ describe('LlmRuntime', () => {
     expect(chunks[0]).toMatchObject({ index: 99 })
   })
 
+  it('runs llm/dispatch with the final adapter payload after file projection', async () => {
+    const ctx = new Context()
+    ctx.provide('attachments', { fileHostPath: () => '/host/notes.txt' } as never)
+    ctx.provide('fs', { processPathFromHostPath: () => '/sandbox/notes.txt' } as never)
+    await ctx.plugin(LlmRuntime)
+    const adapter = new RecordingAdapter(SCRIPT)
+    ctx.llm.registerAdapter(['route'], adapter)
+    let observed: GenerateOptions | undefined
+    let original: GenerateOptions | undefined
+    ctx.on('llm/dispatch', (options, source, next) => {
+      observed = options
+      original = source
+      return next()
+    })
+
+    const attachment = {
+      attachmentId: AttachmentId(`sha256:${'ab'.repeat(32)}`),
+      name: 'notes.txt',
+      bytes: 3,
+    }
+    const request: GenerateOptions = {
+      provider: 'route',
+      model: 'model',
+      messages: [createUserMessage({ content: [{ type: 'file', attachment }], source: { kind: 'user' } })],
+    }
+    await collect(ctx.llm.stream(request))
+
+    expect(observed).toBe(adapter.lastOptions)
+    expect(original).toBe(request)
+    const content = observed?.messages[0]?.content[0]
+    expect(content).toMatchObject({ type: 'text' })
+    if (content?.type !== 'text') throw new Error('expected projected file text')
+    expect(content.text).toContain('"/sandbox/notes.txt"')
+  })
+
   it('resolves the provider after llm/stream listeners have had a chance to route it', async () => {
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)

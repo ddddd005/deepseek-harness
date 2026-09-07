@@ -16,9 +16,10 @@ import {
   createMessage,
   createUserMessage,
 } from '@deepseek-ai/dsh-llm'
-import type { GenerateOptions, MessageSourceMap, StreamChunk } from '@deepseek-ai/dsh-llm'
+import type { GenerateOptions, Message, MessageSourceMap, StreamChunk, ToolSchema } from '@deepseek-ai/dsh-llm'
 import { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import type { AssembleContext, CatalogOptions, PromptCatalog, PromptContributionId } from '@deepseek-ai/dsh-system-prompt'
+import type { Session, SessionEventMap } from '@deepseek-ai/dsh-session'
 import type { KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { promptControlDomainSpec, promptProfileRuleKey } from './spec.ts'
 import type { PromptProfileRecord, PromptProfileRuleRecord, SessionPromptSelectionRecord } from './spec.ts'
@@ -53,6 +54,40 @@ declare module '@deepseek-ai/dsh-llm' {
   }
 }
 
+/** The exact post-projection input accepted by an Adapter for one controlled conversation request. */
+export interface PromptControlRequestInput {
+  /** P0 records only ordinary Agent Loop conversation requests. */
+  readonly purpose: 'conversation'
+  /** Durable loop coordinates for this model attempt. */
+  readonly turn: number
+  readonly step: number
+  readonly attempt: number
+  /** The session's selected base preset, when the session was preset-composed. */
+  readonly basePresetId?: string
+  /** Profile that finalized this request. */
+  readonly profileId: PromptProfileIdType
+  /** Immutable profile revision used for this request. */
+  readonly profileRevision: number
+  /** Effective P0 profile rules, in deterministic application order. */
+  readonly ruleIds: readonly string[]
+  /** Adapter route and model after finalization. */
+  readonly provider: string
+  readonly model: string
+  /** Projected system slot, absent when the request has none. */
+  readonly system?: string
+  /** Exact projected message list accepted by the Adapter. */
+  readonly messages: readonly Message[]
+  /** Exact tool schema list accepted by the Adapter, absent when none was sent. */
+  readonly tools?: readonly ToolSchema[]
+}
+
+declare module '@deepseek-ai/dsh-session/types' {
+  interface SessionEventMap {
+    /** Required post-projection audit record for one Prompt-Controlled conversation request. */
+    'request/input': PromptControlRequestInput
+  }
+}
+
 /**
  * Session-scoped prompt management.
  *
@@ -62,7 +97,7 @@ declare module '@deepseek-ai/dsh-llm' {
  * using the loop's retained post-assembly sections and variables.
  */
 export class PromptControl extends Service {
-  static inject = ['systemPrompt', 'storageDomain', 'llm']
+  static inject = ['systemPrompt', 'storageDomain', 'llm', 'sessions']
 
   static Config: z<PromptControlConfig> = z.object({
     maxProfileCount: z.natural().min(1).default(100),
@@ -273,12 +308,50 @@ export class PromptControl extends Service {
         : createMessage({ role: 'system', content: [{ type: 'text', text }], source })]
     })
     const { system: _system, ...withoutSystem } = options
+    const finalization: PromptControlFinalization = {
+      profileId: profile.id,
+      profileRevision: profile.revision,
+      ruleIds: evaluationRuleIds(profile.rules),
+    }
     this.ctx.llm.replaceStreamRequest(options, {
       ...withoutSystem,
       messages: [...options.messages, ...appended],
       ...system.length === 0 ? {} : { system },
     })
+    if (context.attempt !== undefined) {
+      const session = this.ctx.sessions.get(options.sessionId)
+      if (session === undefined) throw new Error(`prompt-control cannot audit missing session '${String(options.sessionId)}'`)
+      this.ctx.llm.registerStreamDispatchAudit(options, (adapterOptions) => {
+        this.appendRequestInput(session, context, finalization, adapterOptions)
+      })
+    }
     return next()
+  }
+
+  /** Persist the exact projected adapter input before Provider I/O begins. */
+  private appendRequestInput(
+    session: Session,
+    context: NonNullable<ReturnType<typeof agentLoopRequestContext>>,
+    finalization: PromptControlFinalization,
+    options: GenerateOptions,
+  ): void {
+    if (context.attempt === undefined) throw new Error('prompt-control finalization lacks a stamped loop request context')
+    const basePresetId = currentBasePresetId(session)
+    session.append('request/input', {
+      purpose: 'conversation',
+      turn: context.turn,
+      step: context.step,
+      attempt: context.attempt,
+      ...basePresetId === undefined ? {} : { basePresetId },
+      profileId: finalization.profileId,
+      profileRevision: finalization.profileRevision,
+      ruleIds: finalization.ruleIds,
+      provider: options.provider,
+      model: options.model,
+      ...options.system === undefined ? {} : { system: options.system },
+      messages: options.messages,
+      ...options.tools === undefined ? {} : { tools: options.tools },
+    } satisfies SessionEventMap['request/input'])
   }
 
   private get maxProfileCount(): number {
@@ -337,6 +410,33 @@ export class PromptControl extends Service {
     if (this.selections === undefined) throw new Error('prompt-control service is not started')
     return this.selections
   }
+}
+
+interface PromptControlFinalization {
+  readonly profileId: PromptProfileIdType
+  readonly profileRevision: number
+  readonly ruleIds: readonly string[]
+}
+
+function evaluationRuleIds(rules: readonly PromptRule[]): readonly string[] {
+  return rules
+    .filter(rule => rule.enabled)
+    .slice()
+    .sort((left, right) => left.order - right.order || left.id.localeCompare(right.id))
+    .map(rule => rule.id)
+}
+
+/** Fold the same current preset state as the preset projection without importing its optional runtime. */
+function currentBasePresetId(session: Session): string | undefined {
+  const events = session.snapshotEvents() as readonly { readonly type: string; readonly data: unknown }[]
+  const selected = events.findLast(event => event.type === 'agent-preset/selected')
+  if (selected !== undefined
+    && typeof selected.data === 'object'
+    && selected.data !== null
+    && typeof (selected.data as { agentPreset?: unknown }).agentPreset === 'string') {
+    return (selected.data as { agentPreset: string }).agentPreset
+  }
+  return session.header.agentPreset
 }
 
 /** Deployment limits for one Prompt Control provider. */

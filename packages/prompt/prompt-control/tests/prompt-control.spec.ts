@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { createScope, scopeOf } from '@deepseek-ai/dsh-scope'
 import type { Scope } from '@deepseek-ai/dsh-scope'
@@ -7,11 +7,13 @@ import PromptControl, {
   PromptProfileInUseError,
   PromptProfileLimitError,
   PromptRuleId,
+  UnknownPromptContributionError,
 } from '@deepseek-ai/dsh-prompt-control'
 import LlmRuntime, {
   LlmAdapter,
   createUserMessage,
   markAgentLoopRequest,
+  stampAgentLoopRequestAttempt,
 } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import SystemPrompt, { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
@@ -55,6 +57,7 @@ async function mountControl(
   ctx.provide('storageDomain', facility)
   await ctx.plugin(SystemPrompt, config)
   await ctx.plugin(LlmRuntime)
+  await ctx.plugin(SessionStore)
   const fiber = await ctx.plugin(PromptControl, config)
   return { ctx, fiber, facility, pool }
 }
@@ -71,7 +74,6 @@ async function mintScope(ctx: Context): Promise<Scope> {
 async function mountLoopControl() {
   const mounted = await mountControl()
   const { ctx } = mounted
-  await ctx.plugin(SessionStore)
   await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(AgentRegistry)
@@ -284,6 +286,29 @@ describe('PromptControl service', () => {
     expect(adapter.requests[0]?.system).toContain('Profile world')
     expect(adapter.requests[0]?.system).not.toContain('Waterfall world')
     expect(adapter.requests[0]?.messages.at(-1)?.source.kind).toBe('prompt-control')
+    const audit = ctx.sessions.get(sessionId)?.snapshotEvents().find(event => event.type === 'request/input')
+    expect(audit?.type).toBe('request/input')
+    if (audit?.type !== 'request/input') throw new Error('expected request/input audit event')
+    expect(audit.data).toMatchObject({
+      purpose: 'conversation',
+      turn: 1,
+      step: 1,
+      attempt: 1,
+      profileId: profile.id,
+      profileRevision: profile.revision,
+      ruleIds: ['replace', 'tail'],
+      provider: 'mock',
+      model: 'mock',
+    })
+    expect({
+      system: audit.data.system,
+      messages: audit.data.messages,
+      tools: audit.data.tools,
+    }).toEqual({
+      system: adapter.requests[0]?.system,
+      messages: adapter.requests[0]?.messages,
+      tools: adapter.requests[0]?.tools,
+    })
     await fiber.dispose()
 
     send(agent, 'second')
@@ -292,5 +317,81 @@ describe('PromptControl service', () => {
     expect(adapter.requests[1]?.system).toContain('Waterfall world')
     expect(adapter.requests[1]?.system).not.toContain('Profile world')
     expect(adapter.requests[1]?.messages.some(message => message.source.kind === 'prompt-control')).toBe(false)
+  })
+
+  it('prevents provider I/O when finalization or request auditing fails', async () => {
+    const { ctx, adapter } = await mountLoopControl()
+    const sessionId = SessionId('blocked-finalization')
+    const session = ctx.sessions.create(sessionId)
+    session.append('turn/start', { turn: 1 })
+    session.append('step/start', { turn: 1, step: 1 })
+    const profile = await ctx.promptControl.createProfile({
+      name: 'Broken',
+      rules: [{ id: PromptRuleId('missing'), enabled: true, order: 0, action: 'disable', target: 'missing' as never }],
+    })
+    await ctx.promptControl.selectSessionProfile(sessionId, profile.id)
+    const request = markAgentLoopRequest(Object.freeze({
+      provider: 'mock', model: 'mock', messages: [], sessionId,
+    }), {
+      turn: 1,
+      step: 1,
+      prompt: { scope: ctx, sections: [{ name: 'present', text: 'present' }], variables: {} },
+    })
+
+    expect(() => ctx.llm.stream(request)).toThrow(UnknownPromptContributionError)
+    expect(adapter.requests).toHaveLength(0)
+
+    const valid = await ctx.promptControl.updateProfile(profile.id, profile.revision, {
+      rules: [{ id: PromptRuleId('tail'), enabled: true, order: 0, action: 'append-request', role: 'user', text: 'tail' }],
+    })
+    const audited = markAgentLoopRequest(Object.freeze({
+      provider: 'mock', model: 'mock', messages: [], sessionId,
+    }), {
+      turn: 1,
+      step: 1,
+      prompt: { scope: ctx, sections: [{ name: 'present', text: 'present' }], variables: {} },
+    })
+    stampAgentLoopRequestAttempt(audited, 1)
+    vi.spyOn(session, 'append').mockImplementation((type, ...args) => {
+      if (type === 'request/input') throw new Error('audit storage failed')
+      throw new Error(`unexpected session event with ${args.length} arguments`)
+    })
+
+    await collect(ctx.llm.stream(audited))
+    expect(valid.revision).toBe(1)
+    expect(adapter.requests).toHaveLength(0)
+  })
+
+  it('retains a finalized request audit after disposal and records the current preset selection', async () => {
+    const { ctx, fiber, adapter } = await mountLoopControl()
+    const sessionId = SessionId('retained-audit')
+    const session = ctx.sessions.create(sessionId, { meta: { agentPreset: 'created-preset' } })
+    session.append('turn/start', { turn: 1 })
+    session.append('step/start', { turn: 1, step: 1 })
+    const appendExtensionEvent = session.append.bind(session) as unknown as (type: string, data: unknown) => unknown
+    appendExtensionEvent('agent-preset/selected', { agentPreset: 'selected-preset' })
+    const profile = await ctx.promptControl.createProfile({
+      name: 'Controlled',
+      rules: [{ id: PromptRuleId('tail'), enabled: true, order: 0, action: 'append-request', role: 'user', text: 'tail' }],
+    })
+    await ctx.promptControl.selectSessionProfile(sessionId, profile.id)
+    const request = markAgentLoopRequest(Object.freeze({
+      provider: 'mock', model: 'mock', messages: [], sessionId,
+    }), {
+      turn: 1,
+      step: 1,
+      prompt: { scope: ctx, sections: [], variables: {} },
+    })
+    stampAgentLoopRequestAttempt(request, 1)
+
+    const stream = ctx.llm.stream(request)
+    await fiber.dispose()
+    await collect(stream)
+
+    const audit = session.snapshotEvents().findLast(event => event.type === 'request/input')
+    expect(audit?.type).toBe('request/input')
+    if (audit?.type !== 'request/input') throw new Error('expected retained request/input audit event')
+    expect(audit.data.basePresetId).toBe('selected-preset')
+    expect(adapter.requests).toHaveLength(1)
   })
 })

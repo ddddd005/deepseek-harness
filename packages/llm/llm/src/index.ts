@@ -77,6 +77,15 @@ declare module '@deepseek-ai/cordis' {
      */
     'llm/stream'(this: LlmRuntime, options: GenerateOptions, next: () => AsyncIterable<StreamChunk>): AsyncIterable<StreamChunk>
 
+    /**
+     * Waterfall at the final provider boundary, after runtime projection and
+     * replay-state filtering but before the adapter creates its stream.
+     * @param options - the exact request the adapter will receive.
+     * @param original - the request originally observed by `llm/stream`.
+     * @mode waterfall
+     */
+    'llm/dispatch'(this: LlmRuntime, options: GenerateOptions, original: GenerateOptions, next: () => AsyncIterable<StreamChunk>): AsyncIterable<StreamChunk>
+
   }
 }
 
@@ -339,6 +348,7 @@ export class LlmRuntime extends TypertRemoteService {
   private directory = new Map<string, LlmConfigurableProvider>()
   private activeStreamRequests = new WeakSet<GenerateOptions>()
   private streamReplacements = new WeakMap<GenerateOptions, GenerateOptions>()
+  private streamDispatchAudits = new WeakMap<GenerateOptions, (options: GenerateOptions) => void>()
   private discoveries = new Map<
     string,
     (request: LlmModelDiscoveryRequest, signal?: AbortSignal) => Promise<readonly LlmDiscoveredModel[]>
@@ -376,6 +386,23 @@ export class LlmRuntime extends TypertRemoteService {
       throw new LlmError('a stream request already has a replacement', 'INVALID_STREAM_REPLACEMENT')
     }
     this.streamReplacements.set(original, freezeStreamReplacement(replacement))
+  }
+
+  /**
+   * Register synchronous audit work for the exact request entering one active
+   * `llm/stream` waterfall. The audit runs only in the dispatch waterfall's
+   * base case, immediately before the Adapter receives its projected payload.
+   * @param original - exact request object observed by an `llm/stream` listener.
+   * @param audit - durable audit work that may throw to prevent Provider I/O.
+   */
+  registerStreamDispatchAudit(original: GenerateOptions, audit: (options: GenerateOptions) => void): void {
+    if (!this.activeStreamRequests.has(original)) {
+      throw new LlmError('a stream dispatch audit must be registered from its active llm/stream waterfall', 'INVALID_STREAM_REPLACEMENT')
+    }
+    if (this.streamDispatchAudits.has(original)) {
+      throw new LlmError('a stream request already has a dispatch audit', 'INVALID_STREAM_REPLACEMENT')
+    }
+    this.streamDispatchAudits.set(original, audit)
   }
 
   /** Notify topology observers without letting one broken listener veto the commit. */
@@ -1082,7 +1109,17 @@ export class LlmRuntime extends TypertRemoteService {
         : Object.isFrozen(resolvedOptions)
           ? deepFreeze({ ...resolvedOptions, messages: projectedMessages as Message[] })
           : { ...resolvedOptions, messages: projectedMessages as Message[] }
-      const stream = dispatch(this.forAdapter(projectedOptions, adapter))
+      const adapterOptions = this.forAdapter(projectedOptions, adapter)
+      const stream = this.ctx.waterfall(
+        this,
+        'llm/dispatch',
+        adapterOptions,
+        options,
+        () => {
+          this.streamDispatchAudits.get(options)?.(adapterOptions)
+          return dispatch(adapterOptions)
+        },
+      )
       iterator = stream[Symbol.asyncIterator]()
     } catch (error: unknown) {
       yield adapterFailureChunk(error, options.signal)
@@ -1153,6 +1190,7 @@ export class LlmRuntime extends TypertRemoteService {
     } catch (error) {
       this.activeStreamRequests.delete(options)
       this.streamReplacements.delete(options)
+      this.streamDispatchAudits.delete(options)
       throw error
     }
   }
@@ -1167,6 +1205,7 @@ export class LlmRuntime extends TypertRemoteService {
     } finally {
       this.activeStreamRequests.delete(options)
       this.streamReplacements.delete(options)
+      this.streamDispatchAudits.delete(options)
     }
   }
 }

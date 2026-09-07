@@ -891,6 +891,15 @@ The abstract `llm` service: an adapter registry plus a streaming model-call API,
 replaceStreamRequest(original: GenerateOptions, replacement: GenerateOptions): void
 
 /**
+ * Register synchronous audit work for the exact request entering one active
+ * `llm/stream` waterfall. The audit runs only in the dispatch waterfall's
+ * base case, immediately before the Adapter receives its projected payload.
+ * @param original - exact request object observed by an `llm/stream` listener.
+ * @param audit - durable audit work that may throw to prevent Provider I/O.
+ */
+registerStreamDispatchAudit(original: GenerateOptions, audit: (options: GenerateOptions) => void): void
+
+/**
  * Register an adapter for the given provider routes. Throws `LlmError` with code
  * `DUPLICATE_ADAPTER` if any provider already has an adapter (all-or-nothing).
  * Disposed with the fiber.
@@ -1065,6 +1074,25 @@ The provider topology changed: an adapter registered or unregistered routes, or 
 ```
 
 Source: [`packages/llm/llm/src/types.ts`](../../packages/llm/llm/src/types.ts)
+
+<a id="llmdispatch--waterfall"></a>
+
+#### `llm/dispatch` — waterfall
+
+Waterfall at the final provider boundary, after runtime projection and replay-state filtering but before the adapter creates its stream.
+
+```ts cordis-catalog
+/**
+ * Waterfall at the final provider boundary, after runtime projection and
+ * replay-state filtering but before the adapter creates its stream.
+ * @param options - the exact request the adapter will receive.
+ * @param original - the request originally observed by `llm/stream`.
+ * @mode waterfall
+ */
+'llm/dispatch'(this: LlmRuntime, options: GenerateOptions, original: GenerateOptions, next: () => AsyncIterable<StreamChunk>): AsyncIterable<StreamChunk>
+```
+
+Source: [`packages/llm/llm/src/index.ts`](../../packages/llm/llm/src/index.ts)
 
 <a id="llmstream--waterfall"></a>
 

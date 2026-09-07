@@ -147,6 +147,30 @@ describe('validateStoredEvents', () => {
     expect(events[0]).toMatchObject({ type: 'foreign/telemetry', ignorable: true })
   })
 
+  it('accepts the required prompt-control request/input vocabulary in session v2', () => {
+    const m = meta('request-input')
+    const events = [{
+      type: 'request/input',
+      seq: 0,
+      time: 1,
+      data: {
+        purpose: 'conversation',
+        turn: 1,
+        step: 1,
+        attempt: 1,
+        profileId: 'profile',
+        profileRevision: 0,
+        ruleIds: ['tail'],
+        provider: 'mock',
+        model: 'mock',
+        messages: [],
+      },
+    }] as unknown as SessionEvent[]
+
+    expect(validateStoredEvents(m, events)).toBe(events)
+    expect(events[0]).toMatchObject({ type: 'request/input' })
+  })
+
   it('refuses the retired request/header "fallback" reason while accepting current headers', () => {
     const m = meta('retired-reason')
     const retired = [
