@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import type {
   PromptControlCatalogView, PromptControlPreviewView, PromptControlSessionView,
 } from '@deepseek-ai/dsh-prompt-control/types'
@@ -56,6 +56,7 @@ export function PromptControlSettings({ api, currentSession, t }: PromptControlS
   const [selection, setSelection] = useState<PromptControlSessionView>()
   const [catalog, setCatalog] = useState<PromptControlCatalogView>()
   const [preview, setPreview] = useState<PromptControlPreviewView>()
+  const sessionLoadRevision = useRef(0)
   const subscribeCurrentSession = (listener: () => void): (() => void) => currentSession.subscribe(listener)
   const getCurrentSession = (): { readonly current?: unknown } => currentSession.getSnapshot()
   const currentSessionId = useSyncExternalStore(
@@ -90,9 +91,19 @@ export function PromptControlSettings({ api, currentSession, t }: PromptControlS
   }
   useEffect(() => { void load() }, [])
   useEffect(() => {
+    const revision = ++sessionLoadRevision.current
+    setSelection(undefined)
+    setCatalog(undefined)
+    setPreview(undefined)
     if (sessionId === undefined) return
-    void api.getSessionProfile(sessionId).then(setSelection, () => { setNotice('selectionFailed') })
-    void api.catalog(sessionId).then(setCatalog, () => { setNotice('sourcesFailed') })
+    void api.getSessionProfile(sessionId).then(
+      (next) => { if (sessionLoadRevision.current === revision) setSelection(next) },
+      () => { if (sessionLoadRevision.current === revision) setNotice('selectionFailed') },
+    )
+    void api.catalog(sessionId).then(
+      (next) => { if (sessionLoadRevision.current === revision) setCatalog(next) },
+      () => { if (sessionLoadRevision.current === revision) setNotice('sourcesFailed') },
+    )
   }, [sessionId])
 
   const begin = (): void => {
@@ -117,6 +128,7 @@ export function PromptControlSettings({ api, currentSession, t }: PromptControlS
       const saved = profile === undefined
         ? await api.createProfile(input)
         : await api.updateProfile({ id: profile.id, expectedRevision: profile.revision, patch: input })
+      setPreview(undefined)
       await readProfile(saved.id)
       await load()
     } catch (error) {
@@ -142,22 +154,36 @@ export function PromptControlSettings({ api, currentSession, t }: PromptControlS
   }
   const select = async (profileId?: PromptProfileId): Promise<void> => {
     if (sessionId === undefined) return
+    const requestSessionId = sessionId
+    const revision = sessionLoadRevision.current
     try {
-      setSelection(await api.selectSessionProfile({
-        sessionId,
+      const next = await api.selectSessionProfile({
+        sessionId: requestSessionId,
         ...(profileId === undefined ? {} : { profileId }),
-      }))
-      setPreview(undefined)
+      })
+      if (sessionLoadRevision.current === revision && getCurrentSession().current === requestSessionId) {
+        setSelection(next)
+        setPreview(undefined)
+      }
     } catch {
-      setNotice('selectionFailed')
+      if (sessionLoadRevision.current === revision && getCurrentSession().current === requestSessionId) {
+        setNotice('selectionFailed')
+      }
     }
   }
   const showPreview = async (): Promise<void> => {
     if (sessionId === undefined) return
+    const requestSessionId = sessionId
+    const revision = sessionLoadRevision.current
     try {
-      setPreview(await api.previewRequest(sessionId))
+      const next = await api.previewRequest(requestSessionId)
+      if (sessionLoadRevision.current === revision && getCurrentSession().current === requestSessionId) {
+        setPreview(next)
+      }
     } catch {
-      setNotice('previewFailed')
+      if (sessionLoadRevision.current === revision && getCurrentSession().current === requestSessionId) {
+        setNotice('previewFailed')
+      }
     }
   }
   const sourceIds = catalog?.sections.map(item => item.id) ?? []
@@ -229,10 +255,10 @@ export function PromptControlSettings({ api, currentSession, t }: PromptControlS
           <div className={css.inspect}>
             <div>
               <h3>{t('sources')}</h3>
-              {catalog?.sections.map(item => <details key={item.id}>
-                <summary>{item.name} <code>{item.id}</code></summary>
-                <pre>{item.text}</pre>
-              </details>)}
+              <Catalog entries={catalog?.sections} title={t('sections')} t={t} />
+              <Catalog entries={catalog?.contexts} title={t('contexts')} t={t} />
+              <Catalog entries={catalog?.variables} title={t('variables')} t={t} />
+              <Catalog entries={catalog?.tools} title={t('tools')} t={t} />
             </div>
             <div>
               <div className={css.row}>
@@ -325,6 +351,36 @@ function Preview({ preview, t }: {
     <dt>{t('tools')}</dt>
     <dd>{preview.tools?.map(tool => <pre key={tool.name}>{tool.name}: {tool.parameters}</pre>)}</dd>
   </dl>
+}
+
+type CatalogEntry = {
+  readonly id?: string
+  readonly name?: string
+  readonly lane?: string
+  readonly source: { readonly ownerPackage: string }
+  readonly text?: string
+  readonly value?: string
+  readonly description?: string
+  readonly parameters?: string
+}
+
+function Catalog({ entries, title, t }: {
+  readonly entries: readonly CatalogEntry[] | undefined
+  readonly title: string
+  readonly t: (key: PromptControlUiKey) => string
+}): ReactNode {
+  if (entries === undefined || entries.length === 0) return null
+  return <div>
+    <h4>{title}</h4>
+    {entries.map(entry => <details key={entry.id ?? entry.name}>
+      <summary>{entry.name ?? entry.id} {entry.id === undefined ? null : <code>{entry.id}</code>}</summary>
+      <pre>{[
+        entry.lane === undefined ? undefined : `${t('lane')}: ${entry.lane}`,
+        `${t('ownerPackage')}: ${entry.source.ownerPackage}`,
+        entry.text ?? entry.value ?? entry.description ?? entry.parameters,
+      ].filter((part): part is string => part !== undefined).join('\n')}</pre>
+    </details>)}
+  </div>
 }
 
 function appendRule(order: number): PromptRule {

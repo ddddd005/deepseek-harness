@@ -392,6 +392,7 @@ describe('PromptControl service', () => {
     const { ctx, adapter } = await mountLoopControl()
     ctx.systemPrompt.variable('name', () => 'world')
     ctx.systemPrompt.section({ name: 'base', order: 10, text: 'Base {{name}}' })
+    ctx.systemPrompt.context({ name: 'runtime-policy', order: 20, text: 'Runtime {{name}}' })
     const profile = await ctx.promptControl.createProfile({
       name: 'Preview',
       rules: [
@@ -413,6 +414,7 @@ describe('PromptControl service', () => {
 
     expect(agent.session.snapshotEvents()).toEqual(before)
     expect(adapter.requests).toEqual([])
+    expect(agent.status).toBe('idle')
     expect(preview).toMatchObject({
       profileId: profile.id,
       profileRevision: profile.revision,
@@ -420,7 +422,8 @@ describe('PromptControl service', () => {
     })
     expect(preview.system).toContain('Preview world')
     expect(preview.messages.map(message => [message.role, message.source.kind]))
-      .toEqual([['user', 'user'], ['user', 'prompt-control']])
+      .toEqual([['user', 'user'], ['user', 'plugin'], ['user', 'prompt-control']])
+    expect(JSON.stringify(preview.messages[1]?.content)).toContain('Runtime world')
 
     await collect(ctx.llm.stream(draft))
 
@@ -436,6 +439,12 @@ describe('PromptControl service', () => {
       ruleIds: ['replace', 'tail'],
     })
     expect(agent.session.snapshotEvents()).toEqual(before)
+
+    send(agent, 'real request')
+    await waitForIdle(ctx, agent)
+    expect(adapter.requests.at(-1)?.messages.some(message =>
+      message.source.kind === 'plugin'
+      && JSON.stringify(message.content).includes('Runtime world'))).toBe(true)
   })
 
   it('snapshots selected Profile request-only input without carrying it into the next history', async () => {

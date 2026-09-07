@@ -22,20 +22,21 @@ export const inject = ['slots', 'locale', 'remote', 'sessions']
 export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
   ctx.effect(() => ctx.locale.register('settings.promptControl', { zh, en }), 'prompt-control-ui: dictionaries')
   const disposeRemote = await ctx.remote.$mount(promptControlRemote)
+  const promptControl = ctx.get('remote.promptControl') as typeof ctx.remote.promptControl
   const t = ctx.locale.bind('settings.promptControl') as PromptControlSettingsProps['t']
   const injected = (): PromptControlSettingsInjected => ({
     t,
     currentSession: ctx.sessions.list,
     api: {
-      listProfiles: async () => unwrap(await ctx.remote.promptControl.listProfiles()),
-      getProfile: async id => unwrap(await ctx.remote.promptControl.getProfile(id)),
-      createProfile: async input => unwrap(await ctx.remote.promptControl.createProfile(input)),
-      updateProfile: async request => unwrap(await ctx.remote.promptControl.updateProfile(request)),
-      deleteProfile: async request => unwrap(await ctx.remote.promptControl.deleteProfile(request)),
-      getSessionProfile: async sessionId => unwrap(await ctx.remote.promptControl.getSessionProfile(sessionId)),
-      selectSessionProfile: async request => unwrap(await ctx.remote.promptControl.selectSessionProfile(request)),
-      catalog: async sessionId => unwrap(await ctx.remote.promptControl.catalog(sessionId)),
-      previewRequest: async sessionId => unwrap(await ctx.remote.promptControl.previewRequest(sessionId)),
+      listProfiles: async () => unwrap(await promptControl.listProfiles()),
+      getProfile: async id => unwrap(await promptControl.getProfile(id)),
+      createProfile: async input => unwrap(await promptControl.createProfile(input)),
+      updateProfile: async request => unwrap(await promptControl.updateProfile(request)),
+      deleteProfile: async request => unwrap(await promptControl.deleteProfile(request)),
+      getSessionProfile: async sessionId => unwrap(await promptControl.getSessionProfile(sessionId)),
+      selectSessionProfile: async request => unwrap(await promptControl.selectSessionProfile(request)),
+      catalog: async sessionId => unwrap(await promptControl.catalog(sessionId)),
+      previewRequest: async sessionId => unwrap(await promptControl.previewRequest(sessionId)),
     },
   })
   const disposeSlot = ctx.slots.inject('settings.section', () => ctx.slots.register({

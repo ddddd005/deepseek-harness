@@ -43,6 +43,8 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "workspace:^",
+    "@deepseek-ai/cordis-plugin-include": "workspace:^",
+    "@deepseek-ai/cordis-plugin-loader": "workspace:^",
     "@deepseek-ai/dsh-api-remotes": "workspace:^",
     "@deepseek-ai/dsh-api-session-controller": "workspace:^",
     "@deepseek-ai/dsh-agent": "workspace:^",
@@ -63,6 +65,7 @@
     "@deepseek-ai/dsh-tools": "workspace:^",
     "@testing-library/react": "^16.1.0",
     "@types/react": "~18.3.1",
+    "js-yaml": "^4.2.0",
     "react-dom": "^18.2.0"
   },
   "files": ["lib/index.js", "lib/client.js", "lib/types/**/*.d.ts"]

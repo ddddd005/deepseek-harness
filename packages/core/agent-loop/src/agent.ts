@@ -224,19 +224,21 @@ export class ReactLoopAgent implements Agent {
       throw new Error(`agent "${this.id}" cannot prepare a request while ${this.phase.kind}`)
     }
     const assembly = await this.loopCtx.systemPrompt.assemble(assembleContextFor(this))
-    if (this.phase.kind !== 'idle') {
+    const phase = this.idlePhase()
+    if (phase === undefined) {
       throw new Error(`agent "${this.id}" changed state while preparing a request`)
     }
     const system = renderPrompt(assembly)
     const config = this.proposedRequestConfig()
+    const context = this.projectRuntimeContext(assembly)
     return createConversationRequestDraft(
       config,
-      this.session.deriveMessages(),
+      context === undefined ? this.session.deriveMessages() : [...this.session.deriveMessages(), context],
       system,
       assembly,
       this,
       this.session.id,
-      { turn: this.phase.lastTurn + 1, step: 1 },
+      { turn: phase.lastTurn + 1, step: 1 },
     )
   }
 
@@ -270,8 +272,7 @@ export class ReactLoopAgent implements Agent {
     const claimed = this.inbox.claim(target, position.turn)
     const assembly = await this.loopCtx.systemPrompt.assemble(assembleContextFor(this, signal))
     signal.throwIfAborted()
-    const sections = renderContextSections(assembly)
-    const context = this.runtimeContext.project(joinContextSections(sections), sections)
+    const context = this.projectRuntimeContext(assembly)
     const decision = await this.dispatch.waterfall(
       'agent/pre-step', { messages: claimed, ...position, signal },
       (): Promise<PreStepDecision> => Promise.resolve<PreStepDecision>({
@@ -282,6 +283,18 @@ export class ReactLoopAgent implements Agent {
     signal.throwIfAborted()
     return decision.kind === 'reject' ? decision : { ...decision, assembly }
   }
+
+  /** Derive the uncommitted runtime-context message shared by preview and a real step. */
+  private projectRuntimeContext(assembly: PromptAssembly): UserMessage | undefined {
+    const sections = renderContextSections(assembly)
+    return this.runtimeContext.project(joinContextSections(sections), sections)
+  }
+
+  /** Return the idle phase only while a read-only draft remains safe to assemble. */
+  private idlePhase(): Extract<Phase, { kind: 'idle' }> | undefined {
+    return this.phase.kind === 'idle' ? this.phase : undefined
+  }
+
 
   /** Open one turn before claiming its first proposed step. */
   private async turn(): Promise<boolean> {
