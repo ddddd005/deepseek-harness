@@ -22,7 +22,12 @@ const promptRule = z.discriminatedUnion('action', [
   z.object({ ...promptRuleBase, action: z.literal('enable'), target: contributionId }),
   z.object({ ...promptRuleBase, action: z.literal('disable'), target: contributionId }),
   z.object({ ...promptRuleBase, action: z.literal('replace'), target: contributionId, text: z.string() }),
-  z.object({ ...promptRuleBase, action: z.literal('append-request'), role: z.union([z.literal('system'), z.literal('user')]), text: z.string().min(1) }),
+  z.object({
+    ...promptRuleBase,
+    action: z.literal('append-request'),
+    role: z.union([z.literal('system'), z.literal('user')]),
+    text: z.string().refine(text => text.trim().length > 0),
+  }),
 ])
 
 /** Durable profile header; rules reside in the `profile_rules` table. */

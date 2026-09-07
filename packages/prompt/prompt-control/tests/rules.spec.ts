@@ -72,8 +72,8 @@ describe('P0 prompt rule interpreter', () => {
 
     expect(() => evaluatePromptRules([section('known', 0)], [
       { id: PromptRuleId('first'), enabled: true, order: 0, action: 'replace', target: contributionId('known'), text: 'one' },
-      { id: PromptRuleId('second'), enabled: true, order: 1, action: 'replace', target: contributionId('known'), text: 'two' },
-    ])).toThrow(/multiple enabled replacements/)
+      { id: PromptRuleId('second'), enabled: false, order: 1, action: 'replace', target: contributionId('known'), text: 'two' },
+    ])).toThrow(/multiple replacements/)
 
     expect(() => evaluatePromptRules([], [
       { id: PromptRuleId('blank'), enabled: true, order: 0, action: 'append-request', role: 'system', text: '  ' },

@@ -64,12 +64,12 @@ export function validatePromptRuleLayer(rules: readonly PromptRule[]): void {
         break
       case 'replace':
         validateTarget(rule.id, rule.target)
-        if (rule.enabled && replacements.has(rule.target)) {
+        if (replacements.has(rule.target)) {
           throw new PromptRuleValidationError(
-            `prompt rule layer has multiple enabled replacements for '${rule.target}'`,
+            `prompt rule layer has multiple replacements for '${rule.target}'`,
           )
         }
-        if (rule.enabled) replacements.add(rule.target)
+        replacements.add(rule.target)
         if (typeof rule.text !== 'string') {
           throw new PromptRuleValidationError(`replacement rule '${rule.id}' text must be a string`)
         }
