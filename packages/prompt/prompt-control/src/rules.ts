@@ -4,7 +4,7 @@
  * @module @deepseek-ai/dsh-prompt-control/rules
  */
 
-import type { CatalogSection, PromptContributionId } from '@deepseek-ai/dsh-system-prompt'
+import type { PromptContributionId } from '@deepseek-ai/dsh-system-prompt'
 import type { AppendRequestPromptRule, PromptRule } from './model.ts'
 
 /** One enabled system contribution after P0 rules have been applied. */
@@ -13,6 +13,18 @@ export interface EffectivePromptSection {
   readonly id: PromptContributionId
   /** Evaluated text, possibly replaced by a rule. */
   readonly text: string
+}
+
+/** One evaluated system section accepted by the P0 rule interpreter. */
+export interface PromptRuleSection {
+  /** Stable contribution identity from the native prompt registry. */
+  readonly id: PromptContributionId
+  /** Native placement order before rules apply. */
+  readonly order: number
+  /** Text evaluated by the native prompt assembly. */
+  readonly text: string
+  /** Whether native scope and complete semantics retained this section. */
+  readonly effective: boolean
 }
 
 /** One request-only prompt appended after the persistent conversation history. */
@@ -92,13 +104,13 @@ export function validatePromptRuleLayer(rules: readonly PromptRule[]): void {
  * Evaluate the P0 rule layers. Native contributions form the base; the
  * profile layer runs next, followed by the request-only layer. Rules within a
  * layer run by ascending `order`, then code-unit rule id.
- * @param sections - System catalog entries from the native prompt registry.
+ * @param sections - Evaluated system sections from the native prompt assembly.
  * @param profileRules - Durable profile rules.
  * @param requestRules - Rules supplied for this one request only.
  * @returns The controlled system sections and request-tail additions.
  */
 export function evaluatePromptRules(
-  sections: readonly CatalogSection[],
+  sections: readonly PromptRuleSection[],
   profileRules: readonly PromptRule[] = [],
   requestRules: readonly PromptRule[] = [],
 ): PromptRuleEvaluation {
@@ -176,6 +188,6 @@ function compareRules(left: PromptRule, right: PromptRule): number {
   return left.order - right.order || left.id.localeCompare(right.id)
 }
 
-function compareCatalogSections(left: CatalogSection, right: CatalogSection): number {
+function compareCatalogSections(left: PromptRuleSection, right: PromptRuleSection): number {
   return left.order - right.order || left.id.localeCompare(right.id)
 }

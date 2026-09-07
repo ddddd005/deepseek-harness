@@ -8,11 +8,40 @@ import PromptControl, {
   PromptProfileLimitError,
   PromptRuleId,
 } from '@deepseek-ai/dsh-prompt-control'
+import LlmRuntime, {
+  LlmAdapter,
+  createUserMessage,
+  markAgentLoopRequest,
+} from '@deepseek-ai/dsh-llm'
+import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import SystemPrompt, { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
+import ToolRuntime from '@deepseek-ai/dsh-tools'
+import AgentRegistry from '@deepseek-ai/dsh-agent'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import Storage from '@deepseek-ai/dsh-storage'
 import { DomainFacility } from '@deepseek-ai/dsh-storage-domain'
 import { MemoryMediaPool, MemoryStorageBackend } from '../../../storage/storage-domain/tests/helpers/memory-backend.ts'
+
+class RecordingAdapter extends LlmAdapter {
+  lastOptions: GenerateOptions | undefined
+  requests: GenerateOptions[] = []
+
+  override async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    this.lastOptions = options
+    this.requests.push(options)
+    yield { type: 'block-start', index: 0, blockType: 'text' }
+    yield { type: 'text-delta', index: 0, text: 'ok' }
+    yield { type: 'block-end', index: 0, block: { type: 'text', text: 'ok' } }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  }
+}
+
+async function collect(stream: AsyncIterable<StreamChunk>): Promise<void> {
+  for await (const _chunk of stream) { /* drain */ }
+}
 
 async function mountControl(
   config: { persona?: string; maxProfileCount?: number; maxRulesPerProfile?: number } = {},
@@ -25,6 +54,7 @@ async function mountControl(
   ctx.storage.mount('domain', facility)
   ctx.provide('storageDomain', facility)
   await ctx.plugin(SystemPrompt, config)
+  await ctx.plugin(LlmRuntime)
   const fiber = await ctx.plugin(PromptControl, config)
   return { ctx, fiber, facility, pool }
 }
@@ -36,6 +66,34 @@ async function mintScope(ctx: Context): Promise<Scope> {
   await ctx.plugin(Object.assign((inner: Context) => { scope = createScope(inner, { holder: true }) },
     { inject: ['systemPrompt', 'promptControl'] }))
   return scope
+}
+
+async function mountLoopControl() {
+  const mounted = await mountControl()
+  const { ctx } = mounted
+  await ctx.plugin(SessionStore)
+  await ctx.plugin(SessionProjectionRegistry)
+  await ctx.plugin(ToolRuntime)
+  await ctx.plugin(AgentRegistry)
+  await ctx.plugin(AgentLoop, { agents: [] })
+  const adapter = new RecordingAdapter()
+  ctx.llm.registerAdapter(['mock'], adapter)
+  return { ...mounted, adapter }
+}
+
+function waitForIdle(ctx: Context, agent: Agent): Promise<void> {
+  return new Promise((resolve) => {
+    const dispose = ctx.on('agent/status', ({ agent: subject, status }) => {
+      if (subject === agent && status === 'idle') {
+        dispose()
+        resolve()
+      }
+    })
+  })
+}
+
+function send(agent: Agent, text: string): void {
+  agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
 }
 
 describe('PromptControl service', () => {
@@ -129,5 +187,110 @@ describe('PromptControl service', () => {
     await fiber.dispose()
     expect(facility.get('prompt_control')).toBeUndefined()
     expect(ctx.get('promptControl')).toBeUndefined()
+  })
+
+  it('finalizes a selected Profile from the loop post-assembly context', async () => {
+    const { ctx } = await mountControl()
+    const adapter = new RecordingAdapter()
+    ctx.llm.registerAdapter(['route'], adapter)
+    const profile = await ctx.promptControl.createProfile({
+      name: 'Controlled',
+      rules: [
+        { id: PromptRuleId('replace'), enabled: true, order: 0, action: 'replace', target: 'base' as never, text: 'Profile {{name}}' },
+        { id: PromptRuleId('disable'), enabled: true, order: 1, action: 'disable', target: 'removed' as never },
+        { id: PromptRuleId('system-tail'), enabled: true, order: 2, action: 'append-request', role: 'system', text: 'System {{name}}' },
+        { id: PromptRuleId('user-tail'), enabled: true, order: 3, action: 'append-request', role: 'user', text: 'User {{name}}' },
+      ],
+    })
+    const sessionId = SessionId('session-finalized')
+    await ctx.promptControl.selectSessionProfile(sessionId, profile.id)
+    const request = markAgentLoopRequest(Object.freeze({
+      provider: 'route',
+      model: 'model',
+      system: 'Base world\n\nRemoved',
+      messages: [createUserMessage({ content: [{ type: 'text', text: 'History' }], source: { kind: 'user' } })],
+      sessionId,
+    }), {
+      turn: 1,
+      step: 1,
+      prompt: {
+        scope: ctx,
+        sections: [
+          { name: 'base', text: 'Base {{name}}' },
+          { name: 'removed', text: 'Removed' },
+        ],
+        variables: { name: 'world' },
+      },
+    })
+
+    await collect(ctx.llm.stream(request))
+
+    expect(adapter.lastOptions?.system).toBe('Profile world')
+    expect(adapter.lastOptions?.messages.map(message => [message.role, message.content[0]?.type === 'text' ? message.content[0].text : undefined]))
+      .toEqual([['user', 'History'], ['system', 'System world'], ['user', 'User world']])
+    expect(adapter.lastOptions?.messages.slice(1).map(message => message.source.kind))
+      .toEqual(['prompt-control', 'prompt-control'])
+  })
+
+  it('does not finalize auxiliary model calls', async () => {
+    const { ctx } = await mountControl()
+    const adapter = new RecordingAdapter()
+    ctx.llm.registerAdapter(['route'], adapter)
+    const profile = await ctx.promptControl.createProfile({
+      name: 'Controlled',
+      rules: [{ id: PromptRuleId('append'), enabled: true, order: 0, action: 'append-request', role: 'user', text: 'Ignored' }],
+    })
+    const sessionId = SessionId('session-auxiliary')
+    await ctx.promptControl.selectSessionProfile(sessionId, profile.id)
+    const request = markAgentLoopRequest(Object.freeze({
+      provider: 'route',
+      model: 'model',
+      system: 'Original',
+      messages: [],
+      sessionId,
+      purpose: 'session-title' as const,
+    }), {
+      turn: 1,
+      step: 1,
+      prompt: { scope: ctx, sections: [{ name: 'base', text: 'Base' }], variables: {} },
+    })
+
+    await collect(ctx.llm.stream(request))
+
+    expect(adapter.lastOptions).toBe(request)
+  })
+
+  it('uses AgentLoop post-waterfall sections and unregisters finalization on disposal', async () => {
+    const { ctx, fiber, adapter } = await mountLoopControl()
+    ctx.systemPrompt.variable('name', () => 'world')
+    ctx.on('system-prompt/assemble', async (assembly, _context, next) => {
+      const resolved = await next()
+      return { ...resolved, sections: [...assembly.sections, { name: 'waterfall', text: 'Waterfall {{name}}' }] }
+    })
+    const profile = await ctx.promptControl.createProfile({
+      name: 'Controlled',
+      rules: [
+        { id: PromptRuleId('replace'), enabled: true, order: 0, action: 'replace', target: 'waterfall' as never, text: 'Profile {{name}}' },
+        { id: PromptRuleId('tail'), enabled: true, order: 1, action: 'append-request', role: 'user', text: 'Tail {{name}}' },
+      ],
+    })
+    const sessionId = SessionId('loop-finalized')
+    await ctx.promptControl.selectSessionProfile(sessionId, profile.id)
+    const agent = await ctx.agentLoop.create(sessionId, { provider: 'mock', model: 'mock' })
+
+    send(agent, 'first')
+    await waitForIdle(ctx, agent)
+
+    expect(adapter.requests[0]?.system).toContain('Profile world')
+    expect(adapter.requests[0]?.system).not.toContain('Waterfall world')
+    expect(adapter.requests[0]?.messages.at(-1)?.source.kind).toBe('prompt-control')
+    await fiber.dispose()
+
+    send(agent, 'second')
+    await waitForIdle(ctx, agent)
+
+    expect(adapter.requests[1]?.system).toContain('Waterfall world')
+    expect(adapter.requests[1]?.system).not.toContain('Profile world')
+    expect(adapter.requests[1]?.messages.some(message => message.source.kind === 'prompt-control')).toBe(false)
   })
 })

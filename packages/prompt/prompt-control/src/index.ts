@@ -1,9 +1,8 @@
 /**
  * Prompt Control service: session-scoped management of prompt contributions.
  *
- * This increment owns the read-only catalog, durable profile and selection
- * state, and pure P0 rule evaluation. Request finalization lands later behind
- * the same service.
+ * This service owns the read-only catalog, durable profile and selection
+ * state, P0 rule evaluation, and conversation-request finalization.
  *
  * @module @deepseek-ai/dsh-prompt-control
  */
@@ -12,11 +11,19 @@ import { randomUUID } from 'node:crypto'
 import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import type { AssembleContext, CatalogOptions, PromptCatalog } from '@deepseek-ai/dsh-system-prompt'
+import {
+  agentLoopRequestContext,
+  createMessage,
+  createUserMessage,
+} from '@deepseek-ai/dsh-llm'
+import type { GenerateOptions, MessageSourceMap, StreamChunk } from '@deepseek-ai/dsh-llm'
+import { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
+import type { AssembleContext, CatalogOptions, PromptCatalog, PromptContributionId } from '@deepseek-ai/dsh-system-prompt'
 import type { KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { promptControlDomainSpec, promptProfileRuleKey } from './spec.ts'
 import type { PromptProfileRecord, PromptProfileRuleRecord, SessionPromptSelectionRecord } from './spec.ts'
-import { validatePromptRuleLayer } from './rules.ts'
+import { evaluatePromptRules, validatePromptRuleLayer } from './rules.ts'
+import type { PromptRuleSection } from './rules.ts'
 import { PromptProfileId } from './model.ts'
 import type {
   PromptProfile,
@@ -34,15 +41,28 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    /** Transient request-tail instruction inserted by Prompt Control. */
+    'prompt-control': {
+      readonly kind: 'prompt-control'
+      readonly profileId: PromptProfileIdType
+      readonly profileRevision: number
+      readonly ruleId: string
+    }
+  }
+}
+
 /**
  * Session-scoped prompt management.
  *
  * The service exposes the system-prompt registry's evaluated read-only catalog
- * and owns durable Profile / Session selection state. It deliberately does not
- * alter model requests; PR3 consumes this state at the request boundary.
+ * and owns durable Profile / Session selection state. For loop-built
+ * conversation requests, it applies the selected Profile at `llm/stream`
+ * using the loop's retained post-assembly sections and variables.
  */
 export class PromptControl extends Service {
-  static inject = ['systemPrompt', 'storageDomain']
+  static inject = ['systemPrompt', 'storageDomain', 'llm']
 
   static Config: z<PromptControlConfig> = z.object({
     maxProfileCount: z.natural().min(1).default(100),
@@ -65,6 +85,7 @@ export class PromptControl extends Service {
     this.profiles = domain.table('profiles')
     this.rules = domain.table('profile_rules')
     this.selections = domain.table('session_selections')
+    this.ctx.on('llm/stream', (options, next) => this.finalizeConversationRequest(options, next))
   }
 
   /**
@@ -206,6 +227,58 @@ export class PromptControl extends Service {
       if (this.requireProfiles().get(profileId) === undefined) throw new UnknownPromptProfileError(profileId)
       await this.requireSelections().put(sessionId, { profileId })
     })
+  }
+
+  /** Apply one selected Profile to a loop-built conversation request. */
+  private finalizeConversationRequest(options: GenerateOptions, next: () => AsyncIterable<StreamChunk>): AsyncIterable<StreamChunk> {
+    if (options.purpose !== undefined || options.sessionId === undefined) return next()
+    const context = agentLoopRequestContext(options)
+    if (context === undefined) return next()
+    const selection = this.getSessionProfile(options.sessionId)
+    if (selection?.profileId === undefined) return next()
+    const profile = this.getProfile(selection.profileId)
+    if (profile === undefined) throw new UnknownPromptProfileError(selection.profileId)
+
+    const evaluation = evaluatePromptRules(
+      context.prompt.sections.map((section, order): PromptRuleSection => ({
+        id: section.name as PromptContributionId,
+        order,
+        text: section.text,
+        effective: true,
+      })),
+      profile.rules,
+    )
+    const system = renderPrompt({
+      sections: evaluation.sections.map(section => ({ name: section.id, text: section.text })),
+      contexts: [],
+      tools: [],
+      variables: { ...context.prompt.variables },
+    })
+    const appended = evaluation.appendedRequests.flatMap((append) => {
+      const text = renderPrompt({
+        sections: [{ name: `prompt-control:${append.ruleId}`, text: append.text }],
+        contexts: [],
+        tools: [],
+        variables: { ...context.prompt.variables },
+      })
+      if (text.length === 0) return []
+      const source: MessageSourceMap['prompt-control'] = {
+        kind: 'prompt-control',
+        profileId: profile.id,
+        profileRevision: profile.revision,
+        ruleId: append.ruleId,
+      }
+      return [append.role === 'user'
+        ? createUserMessage({ content: [{ type: 'text', text }], source })
+        : createMessage({ role: 'system', content: [{ type: 'text', text }], source })]
+    })
+    const { system: _system, ...withoutSystem } = options
+    this.ctx.llm.replaceStreamRequest(options, {
+      ...withoutSystem,
+      messages: [...options.messages, ...appended],
+      ...system.length === 0 ? {} : { system },
+    })
+    return next()
   }
 
   private get maxProfileCount(): number {
