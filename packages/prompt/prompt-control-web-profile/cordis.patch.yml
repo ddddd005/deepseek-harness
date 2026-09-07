@@ -1,0 +1,6 @@
+# Private Prompt Control layer. Apply after dsh-web-app; no shared Web row changes.
+- insert:
+    - id: prompt-control
+      name: '@deepseek-ai/dsh-prompt-control'
+    - id: ui-prompt-control
+      name: '@deepseek-ai/dsh-prompt-control-ui'

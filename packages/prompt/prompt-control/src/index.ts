@@ -21,6 +21,13 @@ import { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import type { AssembleContext, CatalogOptions, PromptCatalog, PromptContributionId } from '@deepseek-ai/dsh-system-prompt'
 import type { Session, SessionEventMap } from '@deepseek-ai/dsh-session'
 import type { KvTable } from '@deepseek-ai/dsh-storage-domain'
+import { PromptControlController } from './controller.ts'
+import {
+  PromptProfileConflictError,
+  PromptProfileInUseError,
+  PromptProfileLimitError,
+  UnknownPromptProfileError,
+} from './errors.ts'
 import { promptControlDomainSpec, promptProfileRuleKey } from './spec.ts'
 import type { PromptProfileRecord, PromptProfileRuleRecord, SessionPromptSelectionRecord } from './spec.ts'
 import { evaluatePromptRules, validatePromptRuleLayer } from './rules.ts'
@@ -170,6 +177,7 @@ export class PromptControl extends Service {
     this.rules = domain.table('profile_rules')
     this.selections = domain.table('session_selections')
     this.ctx.on('llm/stream', (options, next) => this.finalizeConversationRequest(options, next))
+    this.ctx.plugin(PromptControlController)
   }
 
   /**
@@ -546,30 +554,6 @@ export interface PromptControlConfig {
   readonly maxRulesPerProfile?: number
 }
 
-/** A profile id not present in the durable profile table. */
-export class UnknownPromptProfileError extends Error {
-  constructor(readonly profileId: PromptProfileIdType) {
-    super(`prompt profile '${profileId}' does not exist`)
-  }
-}
-
-/** A profile write based on a stale revision. */
-export class PromptProfileConflictError extends Error {
-  constructor(readonly profileId: PromptProfileIdType, readonly expectedRevision: number, readonly actualRevision: number) {
-    super(`prompt profile '${profileId}' expected revision ${expectedRevision}, found ${actualRevision}`)
-  }
-}
-
-/** A configured profile or rule collection limit was reached. */
-export class PromptProfileLimitError extends Error {}
-
-/** A session selection still refers to the profile proposed for deletion. */
-export class PromptProfileInUseError extends Error {
-  constructor(readonly profileId: PromptProfileIdType, readonly sessionId: SessionPromptSelection['sessionId']) {
-    super(`prompt profile '${profileId}' is selected by session '${sessionId}'`)
-  }
-}
-
 function validateProfileInput(
   name: string,
   description: string | undefined,
@@ -611,6 +595,12 @@ export {
   PromptProfileId,
   PromptRuleId,
 } from './model.ts'
+export {
+  PromptProfileConflictError,
+  PromptProfileInUseError,
+  PromptProfileLimitError,
+  UnknownPromptProfileError,
+} from './errors.ts'
 export type {
   AppendRequestPromptRule,
   DisablePromptRule,
