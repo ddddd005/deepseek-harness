@@ -1215,7 +1215,10 @@ describe('LlmRuntime', () => {
     const replacement: GenerateOptions = {
       ...original,
       system: 'controlled system',
-      messages: [createUserMessage({ content: [{ type: 'text', text: 'request-only instruction' }] })],
+      messages: [createUserMessage({
+        content: [{ type: 'text', text: 'request-only instruction' }],
+        source: { kind: 'user' },
+      })],
       tools: [{ name: 'controlled_tool', description: 'Controlled tool', parameters: {} }],
     }
     ctx.on('llm/stream', (options, next) => {
@@ -1311,6 +1314,38 @@ describe('LlmRuntime', () => {
     await collect(prepared.stream(original))
 
     expect(adapter.lastOptions).toMatchObject({ system: 'controlled system' })
+  })
+
+  it('projects file blocks from a replacement before adapter dispatch', async () => {
+    const ctx = new Context()
+    ctx.provide('attachments', { fileHostPath: () => '/host/notes.txt' } as never)
+    ctx.provide('fs', { processPathFromHostPath: () => '/sandbox/notes.txt' } as never)
+    await ctx.plugin(LlmRuntime)
+    const adapter = new RecordingAdapter(SCRIPT)
+    ctx.llm.registerAdapter(['route'], adapter)
+    const attachment = {
+      attachmentId: AttachmentId(`sha256:${'ab'.repeat(32)}`),
+      name: 'notes.txt',
+      bytes: 3,
+    }
+    const original: GenerateOptions = { provider: 'route', model: 'model', messages: [] }
+    ctx.on('llm/stream', (options, next) => {
+      ctx.llm.replaceStreamRequest(options, {
+        ...options,
+        messages: [createUserMessage({
+          content: [{ type: 'file', attachment }],
+          source: { kind: 'user' },
+        })],
+      })
+      return next()
+    })
+
+    await collect(ctx.llm.stream(original))
+
+    const projected = adapter.lastOptions?.messages[0]?.content[0]
+    expect(projected).toMatchObject({ type: 'text' })
+    if (projected?.type !== 'text') throw new Error('expected projected replacement file text')
+    expect(projected.text).toContain('"/sandbox/notes.txt"')
   })
 
   it('clears a replacement after stream completion so the request may be reused', async () => {

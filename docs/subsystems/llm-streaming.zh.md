@@ -885,6 +885,18 @@ The abstract `llm` service: an adapter registry plus a streaming model-call API,
 
 ```ts cordis-catalog
 /**
+ * Register the payload that the adapter will receive for one in-flight stream
+ * request. The replacement keeps the routing, call configuration, session,
+ * purpose, cancellation signal, and every unrecognized property identical;
+ * only `system`, `messages`, and `tools` may change. A request accepts one
+ * replacement, so independently composed controllers cannot silently erase
+ * each other's finalized payload.
+ * @param original - exact request object observed by an `llm/stream` listener.
+ * @param replacement - finalized request payload to pass to the adapter.
+ */
+replaceStreamRequest(original: GenerateOptions, replacement: GenerateOptions): void
+
+/**
  * Register an adapter for the given provider routes. Throws `LlmError` with code
  * `DUPLICATE_ADAPTER` if any provider already has an adapter (all-or-nothing).
  * Disposed with the fiber.
@@ -1073,10 +1085,11 @@ Waterfall around every streaming model call (retry, replay, routing). Bound to t
  * adapter's stream, or yield your own chunks to short-circuit.
  * @param options - the full request. A LOOP-built request carries the
  *   process-local {@link markAgentLoopRequest} identity and arrives deep-frozen
- *   (mutation throws): its content is a pure function of the session log (the
- *   reconstructability Agent Note), so listeners read it, never rewrite it.
- *   Hand-built calls do not carry that marker; their messages already obey
- *   the immutable creation contract.
+ *   (mutation throws): its content is a pure function of the session log. A
+ *   listener that must control its payload registers a constrained replacement
+ *   through {@link LlmRuntime.replaceStreamRequest}, then calls `next()`.
+ *   Hand-built calls do not carry that marker; their messages already obey the
+ *   immutable creation contract.
  * @mode waterfall
  */
 'llm/stream'(this: LlmRuntime, options: GenerateOptions, next: () => AsyncIterable<StreamChunk>): AsyncIterable<StreamChunk>
