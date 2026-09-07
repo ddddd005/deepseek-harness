@@ -39,6 +39,7 @@ function baseline(): { input: WalkPartitionInput; maps: WalkPartitionMaps } {
     maps: {
       servicePage: { llm: 'llm-streaming.md' },
       serviceWalkExemptions: { theme: 'client-side — packages/client/ui-theme/README.md owns the surface' },
+      excludedServiceSourcePrefixes: [],
       eventScopePage: { llm: 'llm-streaming.md' },
       eventWalkExemptions: { 'theme/change': 'client-face — packages/client/ui-theme/README.md owns the surface' },
     },
@@ -102,6 +103,18 @@ describe('walkPartitionProblems', () => {
     expect(problems).toEqual([
       expect.stringContaining('ctx.theme (packages/client/ui-theme/src/client/index.ts) is declared in a Context merge but invisible'),
     ])
+  })
+
+  it('excludes an unrendered fork-private Context key without a hand-maintained exemption', () => {
+    const { input, maps } = baseline()
+    const privateInput = {
+      ...input,
+      declaredKeys: new Map([...input.declaredKeys, ['promptControl', 'packages/prompt/control/src/index.ts']]),
+    }
+    expect(walkPartitionProblems(privateInput, {
+      ...maps,
+      excludedServiceSourcePrefixes: ['packages/prompt/'],
+    })).toEqual([])
   })
 
   it('rejects an unmapped rendered service with its source pointer, and stale page maps both ways', () => {

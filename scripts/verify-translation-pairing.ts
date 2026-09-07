@@ -12,6 +12,7 @@
 
 import { existsSync, globSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, join, resolve, sep } from 'node:path'
+import { isForkPrivatePolicyPath, parseForkPrivatePackages } from './fork-private-packages.ts'
 import {
   gitBlobHash,
   gitIndexPaths,
@@ -88,7 +89,17 @@ if (manifestContent === undefined) {
   throw new Error('scripts/translation-pairing.manifest.json is missing from the selected content plane')
 }
 const manifest = parseTranslationPairingManifest(manifestContent.toString('utf8'))
-const isTranslationPairSource = translationPairSourcePredicate(manifest)
+const privatePolicyContent = readRepositoryFile('scripts/fork-private-packages.json')
+if (privatePolicyContent === undefined) {
+  throw new Error('scripts/fork-private-packages.json is missing from the selected content plane')
+}
+const privatePolicy = parseForkPrivatePackages(
+  privatePolicyContent.toString('utf8'),
+  'scripts/fork-private-packages.json',
+)
+const manifestTranslationPairSource = translationPairSourcePredicate(manifest)
+const isTranslationPairSource = (source: string): boolean =>
+  manifestTranslationPairSource(source) && !isForkPrivatePolicyPath(privatePolicy, source)
 
 /**
  * An excluded entry ending in `/` excludes the whole directory. The trailing
@@ -97,7 +108,7 @@ const isTranslationPairSource = translationPairSourcePredicate(manifest)
  * manifest must keep their trailing slash.
  */
 function isExcluded(file: string): boolean {
-  return isTranslationPairingManifestExcluded(file, manifest)
+  return isTranslationPairingManifestExcluded(file, manifest) || isForkPrivatePolicyPath(privatePolicy, file)
 }
 
 // Enumerate the scope once: the whole corpus, or exactly the named pairs'

@@ -1,6 +1,6 @@
 {
-  "$comment": "Fork-private packages (fork-local policy, see root AGENTS.md). Leaf documentation gates exempt these paths; TypeScript, lint, tests, dependency graphs, and runtime service checks still apply.",
-  "packages": [
-    "packages/prompt/prompt-control"
+  "$comment": "Fork-private package roots (fork-local policy, see root AGENTS.md). Every package below these roots is exempt from leaf documentation requirements but remains subject to TypeScript, lint, tests, dependency graphs, and runtime service checks.",
+  "directoryPrefixes": [
+    "packages/prompt/"
   ]
 }

@@ -30,6 +30,7 @@ import {
 import type { CordisCatalogPolicy } from '@deepseek-ai/dsh-typert-generator'
 import { renderCordisCoreApiPages } from './cordis-core-api.ts'
 import { contextKeyMap, contextMergeFiles, eventNameList } from './cordis-walk.ts'
+import { forkPrivateSourcePrefixes } from './fork-private-packages.ts'
 import {
   blobHash,
   parsePairMeta,
@@ -147,7 +148,6 @@ export const SERVICE_PAGE: Record<string, string> = {
  * to a model as `cordis_runtime_inspect what:"client"`).
  */
 export const SERVICE_WALK_EXEMPTIONS: Record<string, string> = {
-  promptControl: 'fork-private package: excluded from the generated catalogs via CORDIS_CATALOG_POLICY.excludedServiceSourcePrefixes — packages/prompt/prompt-control owns its contract',
   agent: 'not a service: the DX accessor field on Agent.ctx (root accessor defaulting to undefined) — docs/subsystems/core.md owns the Agent handle',
   appReady: 'not a service: launcher-provided successful-startup signal — packages/boot/cmdline/README.md owns the launcher contract',
   appExit: 'not a service: launcher-provided bounded process-exit callback — packages/boot/cmdline/README.md owns the launcher contract',
@@ -765,7 +765,7 @@ export const TYPE_LINK_EXEMPTIONS: Readonly<Record<string, string>> = {
 
 /** Repository data policy consumed by the Cordis catalog projector. */
 export const CORDIS_CATALOG_POLICY: CordisCatalogPolicy = {
-  excludedServiceSourcePrefixes: ['packages/prompt/prompt-control/', 'packages/prompt/prompt-control-basic/'],
+  excludedServiceSourcePrefixes: forkPrivateSourcePrefixes(root),
   linkedTypePages: LINK_MAP,
   foundationTypeNames: FOUNDATION_TYPE_NAMES,
   typeLinkExemptions: TYPE_LINK_EXEMPTIONS,
@@ -878,6 +878,8 @@ export interface WalkPartitionInput {
 export interface WalkPartitionMaps {
   readonly servicePage: Readonly<Record<string, string>>
   readonly serviceWalkExemptions: Readonly<Record<string, string>>
+  /** Source prefixes whose services are intentionally absent from generated documentation. */
+  readonly excludedServiceSourcePrefixes: readonly string[]
   readonly eventScopePage: Readonly<Record<string, string>>
   readonly eventWalkExemptions: Readonly<Record<string, string>>
 }
@@ -929,6 +931,12 @@ export function walkPartitionProblems(input: WalkPartitionInput, maps: WalkParti
   for (const [key, rel] of input.declaredKeys) {
     const rendered = input.renderedKeys.has(key)
     const exempt = Object.hasOwn(maps.serviceWalkExemptions, key)
+    const privateSource = maps.excludedServiceSourcePrefixes.some(prefix => rel.startsWith(prefix))
+    if (privateSource) {
+      if (rendered) problems.push(`ctx.${key} (${rel}) is rendered despite its fork-private source prefix.`)
+      if (exempt) problems.push(`ctx.${key} (${rel}) is fork-private but remains listed in SERVICE_WALK_EXEMPTIONS; private source prefixes already exclude it.`)
+      continue
+    }
     if (!rendered && !exempt) {
       problems.push(`ctx.${key} (${rel}) is declared in a Context merge but invisible to the rendering projection; map it in SERVICE_PAGE (after making it renderable) or name it in SERVICE_WALK_EXEMPTIONS with its documentation owner.`)
     }
@@ -999,6 +1007,7 @@ export function computeOutputs(): [string, string][] {
   }, {
     servicePage: SERVICE_PAGE,
     serviceWalkExemptions: SERVICE_WALK_EXEMPTIONS,
+    excludedServiceSourcePrefixes: CORDIS_CATALOG_POLICY.excludedServiceSourcePrefixes ?? [],
     eventScopePage: EVENT_SCOPE_PAGE,
     eventWalkExemptions: EVENT_WALK_EXEMPTIONS,
   })
