@@ -8,7 +8,7 @@
 import { brandString } from '@deepseek-ai/dsh-brand'
 import type { Branded } from '@deepseek-ai/dsh-brand'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import type { PromptContributionId } from './index.ts'
+import type { PromptContributionId } from '@deepseek-ai/dsh-system-prompt'
 
 /** Stable branded identity of one user-managed prompt profile. */
 export type PromptProfileId = Branded<'PromptProfileId'>
