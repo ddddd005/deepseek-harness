@@ -12,7 +12,13 @@
       "path": "../../../vendor/cordis"
     },
     {
+      "path": "../../core/session"
+    },
+    {
       "path": "../../core/system-prompt"
+    },
+    {
+      "path": "../../util/brand"
     }
   ]
 }

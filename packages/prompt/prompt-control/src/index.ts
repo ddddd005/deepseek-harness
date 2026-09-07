@@ -61,3 +61,20 @@ export type {
   PromptContributionLifetime,
   PromptContributionSource,
 } from '@deepseek-ai/dsh-system-prompt'
+
+export {
+  PromptProfileId,
+  PromptRuleId,
+} from './model.ts'
+export type {
+  AppendRequestPromptRule,
+  DisablePromptRule,
+  EnablePromptRule,
+  PromptProfile,
+  PromptProfileSummary,
+  PromptRule,
+  PromptRuleAction,
+  PromptRuleBase,
+  ReplacePromptRule,
+  SessionPromptSelection,
+} from './model.ts'
