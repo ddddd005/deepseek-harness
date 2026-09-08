@@ -13,14 +13,21 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import {
   agentLoopRequestContext,
-  createMessage,
-  createUserMessage,
+  freezeMessage,
+  MessageId,
 } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, Message, MessageSourceMap, StreamChunk, ToolSchema } from '@deepseek-ai/dsh-llm'
 import { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import type { AssembleContext, CatalogOptions, PromptCatalog, PromptContributionId } from '@deepseek-ai/dsh-system-prompt'
 import type { Session, SessionEventMap } from '@deepseek-ai/dsh-session'
 import type { KvTable } from '@deepseek-ai/dsh-storage-domain'
+import { PromptControlController } from './controller.ts'
+import {
+  PromptProfileConflictError,
+  PromptProfileInUseError,
+  PromptProfileLimitError,
+  UnknownPromptProfileError,
+} from './errors.ts'
 import { promptControlDomainSpec, promptProfileRuleKey } from './spec.ts'
 import type { PromptProfileRecord, PromptProfileRuleRecord, SessionPromptSelectionRecord } from './spec.ts'
 import { evaluatePromptRules, validatePromptRuleLayer } from './rules.ts'
@@ -78,6 +85,22 @@ export interface PromptControlRequestInput {
   /** Exact projected message list accepted by the Adapter. */
   readonly messages: readonly Message[]
   /** Exact tool schema list accepted by the Adapter, absent when none was sent. */
+  readonly tools?: readonly ToolSchema[]
+}
+
+/** Read-only finalization result for one loop-built conversation request draft. */
+export interface PromptControlRequestPreview {
+  /** Selected profile when one applied to this draft. */
+  readonly profileId?: PromptProfileIdType
+  /** Selected profile revision when one applied to this draft. */
+  readonly profileRevision?: number
+  /** Effective P0 rule ids in deterministic application order. */
+  readonly ruleIds: readonly string[]
+  /** Final system slot after Prompt Control rules. */
+  readonly system?: string
+  /** Final conversation messages after request-only append rules. */
+  readonly messages: readonly Message[]
+  /** The loop-assembled tools, unchanged by P0 rules. */
   readonly tools?: readonly ToolSchema[]
 }
 
@@ -154,6 +177,7 @@ export class PromptControl extends Service {
     this.rules = domain.table('profile_rules')
     this.selections = domain.table('session_selections')
     this.ctx.on('llm/stream', (options, next) => this.finalizeConversationRequest(options, next))
+    this.ctx.plugin(PromptControlController)
   }
 
   /**
@@ -299,59 +323,39 @@ export class PromptControl extends Service {
     })
   }
 
+  /**
+   * Finalize a loop-prepared conversation draft without entering `llm/stream`
+   * or writing any Session state.
+   * @param request - a read-only draft returned by `AgentLoop.prepareConversationRequest`.
+   * @returns the system, messages, tools, and rules that a matching real request uses.
+   */
+  previewConversationRequest(request: GenerateOptions): PromptControlRequestPreview {
+    if (request.purpose !== undefined || request.sessionId === undefined) {
+      throw new Error('prompt-control preview requires a loop-built conversation request')
+    }
+    if (agentLoopRequestContext(request) === undefined) {
+      throw new Error('prompt-control preview requires a loop-built request context')
+    }
+    const selection = this.getSessionProfile(request.sessionId)
+    if (selection?.profileId === undefined) return previewUncontrolledRequest(request)
+    const profile = this.getProfile(selection.profileId)
+    if (profile === undefined) throw new UnknownPromptProfileError(selection.profileId)
+    return finalizePromptControlRequest(request, profile)
+  }
+
   /** Apply one selected Profile to a loop-built conversation request. */
   private finalizeConversationRequest(options: GenerateOptions, next: () => AsyncIterable<StreamChunk>): AsyncIterable<StreamChunk> {
     if (options.purpose !== undefined || options.sessionId === undefined) return next()
     const context = agentLoopRequestContext(options)
     if (context === undefined) return next()
-    const selection = this.getSessionProfile(options.sessionId)
-    if (selection?.profileId === undefined) return next()
-    const profile = this.getProfile(selection.profileId)
-    if (profile === undefined) throw new UnknownPromptProfileError(selection.profileId)
-
-    const evaluation = evaluatePromptRules(
-      context.prompt.sections.map((section, order): PromptRuleSection => ({
-        id: section.name as PromptContributionId,
-        order,
-        text: section.text,
-        effective: true,
-      })),
-      profile.rules,
-    )
-    const system = renderPrompt({
-      sections: evaluation.sections.map(section => ({ name: section.id, text: section.text })),
-      contexts: [],
-      tools: [],
-      variables: { ...context.prompt.variables },
-    })
-    const appended = evaluation.appendedRequests.flatMap((append) => {
-      const text = renderPrompt({
-        sections: [{ name: `prompt-control:${append.ruleId}`, text: append.text }],
-        contexts: [],
-        tools: [],
-        variables: { ...context.prompt.variables },
-      })
-      if (text.length === 0) return []
-      const source: MessageSourceMap['prompt-control'] = {
-        kind: 'prompt-control',
-        profileId: profile.id,
-        profileRevision: profile.revision,
-        ruleId: append.ruleId,
-      }
-      return [append.role === 'user'
-        ? createUserMessage({ content: [{ type: 'text', text }], source })
-        : createMessage({ role: 'system', content: [{ type: 'text', text }], source })]
-    })
+    const preview = this.previewConversationRequest(options)
+    const finalization = finalizedPreview(preview)
+    if (finalization === undefined) return next()
     const { system: _system, ...withoutSystem } = options
-    const finalization: PromptControlFinalization = {
-      profileId: profile.id,
-      profileRevision: profile.revision,
-      ruleIds: evaluationRuleIds(profile.rules),
-    }
     this.ctx.llm.replaceStreamRequest(options, {
       ...withoutSystem,
-      messages: [...options.messages, ...appended],
-      ...system.length === 0 ? {} : { system },
+      messages: [...preview.messages],
+      ...preview.system === undefined ? {} : { system: preview.system },
     })
     if (context.attempt !== undefined) {
       const session = this.ctx.sessions.get(options.sessionId)
@@ -367,7 +371,7 @@ export class PromptControl extends Service {
   private appendRequestInput(
     session: Session,
     context: NonNullable<ReturnType<typeof agentLoopRequestContext>>,
-    finalization: PromptControlFinalization,
+    finalization: PromptControlFinalizedRequest,
     options: GenerateOptions,
   ): void {
     if (context.attempt === undefined) throw new Error('prompt-control finalization lacks a stamped loop request context')
@@ -447,10 +451,78 @@ export class PromptControl extends Service {
   }
 }
 
-interface PromptControlFinalization {
+/** Return the unchanged loop draft when no Profile is selected. */
+function previewUncontrolledRequest(request: GenerateOptions): PromptControlRequestPreview {
+  return Object.freeze({
+    ruleIds: Object.freeze([]),
+    ...request.system === undefined ? {} : { system: request.system },
+    messages: Object.freeze([...request.messages]),
+    ...request.tools === undefined ? {} : { tools: Object.freeze([...request.tools]) },
+  })
+}
+
+interface PromptControlFinalizedRequest extends PromptControlRequestPreview {
   readonly profileId: PromptProfileIdType
   readonly profileRevision: number
-  readonly ruleIds: readonly string[]
+}
+
+/** Narrow a preview result to one that applied a selected Profile. */
+function finalizedPreview(preview: PromptControlRequestPreview): PromptControlFinalizedRequest | undefined {
+  if (preview.profileId === undefined || preview.profileRevision === undefined) return undefined
+  return preview as PromptControlFinalizedRequest
+}
+
+/**
+ * Apply one Profile to a loop-built request without registering a replacement,
+ * audit, or other LLM lifecycle state.
+ */
+function finalizePromptControlRequest(request: GenerateOptions, profile: PromptProfile): PromptControlFinalizedRequest {
+  const context = agentLoopRequestContext(request)
+  if (context === undefined) throw new Error('prompt-control finalization requires a loop-built request context')
+  const evaluation = evaluatePromptRules(
+    context.prompt.sections.map((section, order): PromptRuleSection => ({
+      id: section.name as PromptContributionId,
+      order,
+      text: section.text,
+      effective: true,
+    })),
+    profile.rules,
+  )
+  const system = renderPrompt({
+    sections: evaluation.sections.map(section => ({ name: section.id, text: section.text })),
+    contexts: [],
+    tools: [],
+    variables: { ...context.prompt.variables },
+  })
+  const appended = evaluation.appendedRequests.flatMap((append) => {
+    const text = renderPrompt({
+      sections: [{ name: `prompt-control:${append.ruleId}`, text: append.text }],
+      contexts: [],
+      tools: [],
+      variables: { ...context.prompt.variables },
+    })
+    if (text.length === 0) return []
+    const source: MessageSourceMap['prompt-control'] = {
+      kind: 'prompt-control',
+      profileId: profile.id,
+      profileRevision: profile.revision,
+      ruleId: append.ruleId,
+    }
+    return [freezeMessage({
+      id: MessageId(`prompt-control:${profile.id}:${profile.revision}:${append.ruleId}`),
+      role: append.role,
+      content: [{ type: 'text', text }],
+      source,
+    })]
+  })
+  return Object.freeze({
+    profileId: profile.id,
+    profileRevision: profile.revision,
+    ruleIds: Object.freeze([...evaluationRuleIds(profile.rules)]),
+    ...system.length === 0 ? {} : { system },
+    messages: Object.freeze([...request.messages, ...appended]),
+    ...request.tools === undefined ? {} : { tools: Object.freeze([...request.tools]) },
+  })
 }
 
 function evaluationRuleIds(rules: readonly PromptRule[]): readonly string[] {
@@ -480,30 +552,6 @@ export interface PromptControlConfig {
   readonly maxProfileCount?: number
   /** Maximum rules admitted by one profile. */
   readonly maxRulesPerProfile?: number
-}
-
-/** A profile id not present in the durable profile table. */
-export class UnknownPromptProfileError extends Error {
-  constructor(readonly profileId: PromptProfileIdType) {
-    super(`prompt profile '${profileId}' does not exist`)
-  }
-}
-
-/** A profile write based on a stale revision. */
-export class PromptProfileConflictError extends Error {
-  constructor(readonly profileId: PromptProfileIdType, readonly expectedRevision: number, readonly actualRevision: number) {
-    super(`prompt profile '${profileId}' expected revision ${expectedRevision}, found ${actualRevision}`)
-  }
-}
-
-/** A configured profile or rule collection limit was reached. */
-export class PromptProfileLimitError extends Error {}
-
-/** A session selection still refers to the profile proposed for deletion. */
-export class PromptProfileInUseError extends Error {
-  constructor(readonly profileId: PromptProfileIdType, readonly sessionId: SessionPromptSelection['sessionId']) {
-    super(`prompt profile '${profileId}' is selected by session '${sessionId}'`)
-  }
 }
 
 function validateProfileInput(
@@ -547,6 +595,12 @@ export {
   PromptProfileId,
   PromptRuleId,
 } from './model.ts'
+export {
+  PromptProfileConflictError,
+  PromptProfileInUseError,
+  PromptProfileLimitError,
+  UnknownPromptProfileError,
+} from './errors.ts'
 export type {
   AppendRequestPromptRule,
   DisablePromptRule,

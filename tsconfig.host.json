@@ -195,6 +195,7 @@
     { "path": "./packages/session/session-telemetry-otel" },
     { "path": "./packages/core/system-prompt" },
     { "path": "./packages/prompt/prompt-control" },
+    { "path": "./packages/prompt/prompt-control-web-profile" },
     { "path": "./packages/core/agent" },
     { "path": "./packages/core/agent-default-model" },
     { "path": "./packages/interaction/commands" },

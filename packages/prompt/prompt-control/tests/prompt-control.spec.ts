@@ -25,6 +25,8 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import Storage from '@deepseek-ai/dsh-storage'
 import { DomainFacility } from '@deepseek-ai/dsh-storage-domain'
+import { remoteErrorOf } from '@deepseek-ai/dsh-typert-protocol'
+import type {} from '../src/controller.ts'
 import { MemoryMediaPool, MemoryStorageBackend } from '../../../storage/storage-domain/tests/helpers/memory-backend.ts'
 
 class RecordingAdapter extends LlmAdapter {
@@ -74,6 +76,10 @@ async function mintScope(ctx: Context): Promise<Scope> {
 async function mountLoopControl() {
   const mounted = await mountControl()
   const { ctx } = mounted
+  ctx.provide('typert', {
+    lookups: { configure: () => () => {} },
+    contexts: { configureHost: () => () => {} },
+  } as never)
   await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(AgentRegistry)
@@ -99,6 +105,48 @@ function send(agent: Agent, text: string): void {
 }
 
 describe('PromptControl service', () => {
+  it('serves Profile selection and a read-only finalized preview through its Host Remote', async () => {
+    const { ctx, adapter } = await mountLoopControl()
+    ctx.systemPrompt.section({ name: 'base', order: 10, text: 'Base prompt' })
+    const controller = ctx.promptControlController
+    const profile = await controller.createProfile({
+      name: 'Remote profile',
+      rules: [{ id: PromptRuleId('tail'), enabled: true, order: 0, action: 'append-request', role: 'user', text: 'Remote tail' }],
+    })
+    const sessionId = SessionId('remote-preview')
+    const agent = await ctx.agentLoop.create(sessionId, { provider: 'mock', model: 'mock' })
+    agent.session.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: 'Committed message' }], source: { kind: 'user' },
+    }), { surfaceOp: 'append' })
+    const before = agent.session.snapshotEvents()
+
+    expect(controller.listProfiles()).toEqual([expect.objectContaining({ id: profile.id, ruleCount: 1 })])
+    expect(await controller.selectSessionProfile({ sessionId, profileId: profile.id }))
+      .toEqual({ selection: { sessionId, profileId: profile.id } })
+    const preview = await controller.previewRequest(sessionId)
+
+    expect(preview).toMatchObject({
+      profileId: profile.id,
+      profileRevision: profile.revision,
+      ruleIds: ['tail'],
+      messages: [
+        { role: 'user', sourceKind: 'user', content: JSON.stringify([{ type: 'text', text: 'Committed message' }]) },
+        { role: 'user', sourceKind: 'prompt-control', content: JSON.stringify([{ type: 'text', text: 'Remote tail' }]) },
+      ],
+    })
+    expect(preview.system).toContain('Base prompt')
+    expect(agent.session.snapshotEvents()).toEqual(before)
+    expect(adapter.requests).toEqual([])
+
+    await ctx.promptControl.updateProfile(profile.id, profile.revision, { name: 'Updated elsewhere' })
+    const conflict = await controller.updateProfile({ id: profile.id, expectedRevision: profile.revision, patch: { name: 'Stale editor' } })
+      .catch((error: unknown) => error)
+    expect(remoteErrorOf(conflict)).toMatchObject({
+      code: 'prompt-control/conflict',
+      details: { profileId: profile.id, expectedRevision: profile.revision, actualRevision: 1 },
+    })
+  })
+
   it('delegates the catalog read to the system-prompt registry', async () => {
     const { ctx } = await mountControl()
     ctx.systemPrompt.section({ name: 'delegated', order: 10, text: 'delegated text' })
@@ -338,6 +386,65 @@ describe('PromptControl service', () => {
     expect(adapter.requests[1]?.system).toContain('Waterfall world')
     expect(adapter.requests[1]?.system).not.toContain('Profile world')
     expect(adapter.requests[1]?.messages.some(message => message.source.kind === 'prompt-control')).toBe(false)
+  })
+
+  it('prepares and previews the current session without writes or Adapter I/O', async () => {
+    const { ctx, adapter } = await mountLoopControl()
+    ctx.systemPrompt.variable('name', () => 'world')
+    ctx.systemPrompt.section({ name: 'base', order: 10, text: 'Base {{name}}' })
+    ctx.systemPrompt.context({ name: 'runtime-policy', order: 20, text: 'Runtime {{name}}' })
+    const profile = await ctx.promptControl.createProfile({
+      name: 'Preview',
+      rules: [
+        { id: PromptRuleId('replace'), enabled: true, order: 0, action: 'replace', target: 'base' as never, text: 'Preview {{name}}' },
+        { id: PromptRuleId('tail'), enabled: true, order: 1, action: 'append-request', role: 'user', text: 'Request only {{name}}' },
+      ],
+    })
+    const sessionId = SessionId('preview-current-session')
+    await ctx.promptControl.selectSessionProfile(sessionId, profile.id)
+    const agent = await ctx.agentLoop.create(sessionId, { provider: 'mock', model: 'mock' })
+    agent.session.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: 'Committed history' }],
+      source: { kind: 'user' },
+    }), { surfaceOp: 'append' })
+    const before = agent.session.snapshotEvents()
+
+    const draft = await ctx.agentLoop.prepareConversationRequest(sessionId)
+    const preview = ctx.promptControl.previewConversationRequest(draft)
+
+    expect(agent.session.snapshotEvents()).toEqual(before)
+    expect(adapter.requests).toEqual([])
+    expect(agent.status).toBe('idle')
+    expect(preview).toMatchObject({
+      profileId: profile.id,
+      profileRevision: profile.revision,
+      ruleIds: ['replace', 'tail'],
+    })
+    expect(preview.system).toContain('Preview world')
+    expect(preview.messages.map(message => [message.role, message.source.kind]))
+      .toEqual([['user', 'user'], ['user', 'plugin'], ['user', 'prompt-control']])
+    expect(JSON.stringify(preview.messages[1]?.content)).toContain('Runtime world')
+
+    await collect(ctx.llm.stream(draft))
+
+    expect({
+      system: adapter.lastOptions?.system,
+      messages: adapter.lastOptions?.messages,
+      tools: adapter.lastOptions?.tools,
+      ruleIds: preview.ruleIds,
+    }).toEqual({
+      system: preview.system,
+      messages: preview.messages,
+      tools: preview.tools,
+      ruleIds: ['replace', 'tail'],
+    })
+    expect(agent.session.snapshotEvents()).toEqual(before)
+
+    send(agent, 'real request')
+    await waitForIdle(ctx, agent)
+    expect(adapter.requests.at(-1)?.messages.some(message =>
+      message.source.kind === 'plugin'
+      && JSON.stringify(message.content).includes('Runtime world'))).toBe(true)
   })
 
   it('snapshots selected Profile request-only input without carrying it into the next history', async () => {

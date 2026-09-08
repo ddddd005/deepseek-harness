@@ -23,6 +23,7 @@ import type {
   TurnBoundaryProjection,
 } from '@deepseek-ai/dsh-agent'
 import { errorChain, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-settings'
 import { interruptedTurnClosers, SessionLogOffset, SessionPreparation, SessionSeq } from '@deepseek-ai/dsh-session'
 import type { Session, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
@@ -452,6 +453,21 @@ export class AgentLoop extends Service implements AgentFactory {
         return fiber.dispose
       }, `agentLoop.resume(${id})`)
     }
+  }
+
+  /**
+   * Assemble a live session's next conversation surface without mutating the
+   * Session or entering the LLM request lifecycle.
+   * @param sessionId - identity shared by the live session and its loop agent.
+   * @returns a loop-marked request draft for a read-only consumer.
+   * @throws when no live loop agent owns `sessionId` or it is processing a turn.
+   */
+  prepareConversationRequest(sessionId: SessionId): Promise<GenerateOptions> {
+    const agent = this.ctx.agents.get(sessionId)
+    if (!(agent instanceof ReactLoopAgent)) {
+      throw new Error(`agent-loop cannot prepare a request for inactive session '${String(sessionId)}'`)
+    }
+    return agent.prepareConversationRequest()
   }
 
   /** Report a contained declarative-start failure to identity-bound consumers. */
