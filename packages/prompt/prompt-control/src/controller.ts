@@ -36,7 +36,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     /** A referenced profile or live Session was unavailable. */
     'prompt-control/not-found': { readonly id: string; readonly kind: 'profile' | 'session' }
     /** A valid mutation was refused by Prompt Control's domain rules. */
-    'prompt-control/rejected': { readonly operation: string }
+    'prompt-control/rejected': { readonly operation: string; readonly sessionId?: string }
   }
 }
 
@@ -200,7 +200,13 @@ export class PromptControlController extends TypertRemoteService {
           kind: 'profile',
         }, { cause: error })
       }
-      if (error instanceof PromptProfileInUseError || error instanceof PromptProfileLimitError || error instanceof TypeError) {
+      if (error instanceof PromptProfileInUseError) {
+        throw new RemoteError('prompt-control/rejected', error.message, {
+          operation,
+          sessionId: error.sessionId,
+        }, { cause: error })
+      }
+      if (error instanceof PromptProfileLimitError || error instanceof TypeError) {
         throw new RemoteError('prompt-control/rejected', error.message, { operation }, { cause: error })
       }
       throw error

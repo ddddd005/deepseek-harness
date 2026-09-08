@@ -48,8 +48,18 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
 
 function unwrap<T>(
   result: { readonly ok: true; readonly value: T }
-    | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } },
+    | {
+      readonly ok: false
+      readonly error: {
+        readonly code: string
+        readonly message: string
+        readonly details?: object
+      }
+    },
 ): T {
   if (result.ok) return result.value
-  throw Object.assign(new Error(result.error.message), { code: result.error.code })
+  throw Object.assign(new Error(result.error.message), {
+    code: result.error.code,
+    details: result.error.details,
+  })
 }

@@ -41,7 +41,7 @@ export type PromptControlSettingsProps = PropsRuntime<'settings.section'>
   & PropsLocale<'settings.promptControl'>
   & InjectFace<PromptControlSettingsInjected>
 
-type Notice = 'loadFailed' | 'saveFailed' | 'conflict' | 'selectionFailed' | 'previewFailed' | 'sourcesFailed'
+type Notice = 'loadFailed' | 'saveFailed' | 'conflict' | 'profileInUse' | 'selectionFailed' | 'previewFailed' | 'sourcesFailed'
 
 /** Manage a Profile and inspect its effect on the current conversation only. */
 export function PromptControlSettings({ api, currentSession, t }: PromptControlSettingsProps): ReactNode {
@@ -53,6 +53,7 @@ export function PromptControlSettings({ api, currentSession, t }: PromptControlS
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [notice, setNotice] = useState<Notice>()
+  const [blockingSessionId, setBlockingSessionId] = useState<string>()
   const [selection, setSelection] = useState<PromptControlSessionView>()
   const [catalog, setCatalog] = useState<PromptControlCatalogView>()
   const [preview, setPreview] = useState<PromptControlPreviewView>()
@@ -112,6 +113,7 @@ export function PromptControlSettings({ api, currentSession, t }: PromptControlS
     setDescription('')
     setRules([])
     setNotice(undefined)
+    setBlockingSessionId(undefined)
   }
   const save = async (): Promise<void> => {
     if (name.trim().length === 0) {
@@ -148,8 +150,15 @@ export function PromptControlSettings({ api, currentSession, t }: PromptControlS
       await api.deleteProfile({ id: profile.id, expectedRevision: profile.revision })
       begin()
       await load()
-    } catch {
-      setNotice('saveFailed')
+    } catch (error) {
+      const sessionId = rejectedSessionId(error)
+      if (sessionId === undefined) {
+        setBlockingSessionId(undefined)
+        setNotice('saveFailed')
+      } else {
+        setBlockingSessionId(sessionId)
+        setNotice('profileInUse')
+      }
     }
   }
   const select = async (profileId?: PromptProfileId): Promise<void> => {
@@ -205,7 +214,11 @@ export function PromptControlSettings({ api, currentSession, t }: PromptControlS
   }
   return <section className={css.section} aria-busy={loading || saving}>
     <h2>{t('title')}</h2>
-    {notice === undefined ? null : <p role="alert" className={css.error}>{t(notice)}</p>}
+    {notice === undefined ? null : <p role="alert" className={css.error}>
+      {t(notice)}{notice === 'profileInUse' && blockingSessionId !== undefined
+        ? <> <code>{blockingSessionId}</code></>
+        : null}
+    </p>}
     {loading ? <p>{t('loading')}</p> : <div className={css.layout}>
       <aside>
         <button type="button" onClick={begin}>{t('create')}</button>
@@ -412,5 +425,13 @@ function changeAction(
 function errorCode(error: unknown): string | undefined {
   return typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
     ? error.code
+    : undefined
+}
+
+function rejectedSessionId(error: unknown): string | undefined {
+  if (errorCode(error) !== 'prompt-control/rejected' || typeof error !== 'object' || error === null) return undefined
+  if (!('details' in error) || typeof error.details !== 'object' || error.details === null) return undefined
+  return 'sessionId' in error.details && typeof error.details.sessionId === 'string'
+    ? error.details.sessionId
     : undefined
 }

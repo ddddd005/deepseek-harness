@@ -12,6 +12,7 @@ import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include, { entryListSchema, type PatchOptions } from '@deepseek-ai/cordis-plugin-include'
 import * as yaml from 'js-yaml'
 import TypertRegistry from '@deepseek-ai/dsh-typert-registry'
+import { remoteErrorOf } from '@deepseek-ai/dsh-typert-protocol'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
@@ -205,7 +206,16 @@ async function bootClient(
             default: throw new Error(`unexpected Prompt Control Remote endpoint: ${endpoint}`)
           }
         }
-        return { ok: true as const, value: await (intercept?.(endpoint, payload, invoke) ?? invoke()) }
+        try {
+          return { ok: true as const, value: await (intercept?.(endpoint, payload, invoke) ?? invoke()) }
+        } catch (error) {
+          const remote = remoteErrorOf(error)
+          if (remote === undefined) throw error
+          return {
+            ok: false as const,
+            error: { code: remote.code, message: remote.message, details: remote.details },
+          }
+        }
       },
     },
     registerGenerationSource: () => () => {},
@@ -322,6 +332,35 @@ describe('Prompt Control browser critical flow', () => {
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'Send it' }], source: { kind: 'user' } }))
     await idle
     expect(adapter.lastOptions?.messages.some(message => message.source.kind === 'prompt-control')).toBe(true)
+  })
+
+  it('identifies the other session that still blocks Profile deletion', async () => {
+    const { ctx } = await boot()
+    const blockingSession = SessionId('browser-delete-blocking')
+    const currentSession = SessionId('browser-delete-current')
+    await ctx.agentLoop.create(blockingSession, { provider: 'mock', model: 'mock' })
+    await ctx.agentLoop.create(currentSession, { provider: 'mock', model: 'mock' })
+    const controller = controllerOf(ctx)
+    const profile = await controller.createProfile({ name: 'Shared profile' })
+    await controller.selectSessionProfile({ sessionId: blockingSession, profileId: profile.id })
+    await controller.selectSessionProfile({ sessionId: currentSession, profileId: profile.id })
+    const { slots } = await bootClient(ctx, currentSession)
+    const section = slots.entries('settings.section')[0]!
+    render(createElement(section.component as never, (section.inject as () => object)()))
+
+    await screen.findByText('Shared profile')
+    fireEvent.click(screen.getByRole('button', { name: 'Shared profile' }))
+    await screen.findByDisplayValue('Shared profile')
+    fireEvent.click(screen.getByRole('button', { name: en.clear }))
+    await waitFor(() => {
+      expect(controller.getSessionProfile(currentSession).selection).toBeUndefined()
+    })
+    fireEvent.click(screen.getByRole('button', { name: en.remove }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain(en.profileInUse)
+    expect(alert.textContent).toContain(blockingSession)
+    expect(controller.getProfile(profile.id)).toBeDefined()
   })
 
   it('ignores a previous session selection and Preview after switching conversations', async () => {

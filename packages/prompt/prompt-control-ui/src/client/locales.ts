@@ -7,6 +7,7 @@ export const en = {
   action: 'Action', enabled: 'Enabled', order: 'Order', target: 'Source ID', text: 'Text', role: 'Role', user: 'User',
   append: 'Append request-only', disable: 'Disable source', enable: 'Enable source', replace: 'Replace source', deleteRule: 'Remove rule',
   loadFailed: 'Could not load Prompt Control.', saveFailed: 'Could not save the profile.', conflict: 'This profile changed elsewhere. Latest data was reloaded.',
+  profileInUse: 'This profile is still selected by session:',
   selectionFailed: 'Could not update the session profile.', previewFailed: 'Could not load the preview.', sourcesFailed: 'Could not load sources.',
 } as const
 
@@ -21,5 +22,6 @@ export const zh: Record<PromptControlUiKey, string> = {
   action: '操作', enabled: '启用', order: '顺序', target: '来源 ID', text: '文本', role: '角色', user: 'User',
   append: '追加 request-only', disable: '禁用来源', enable: '启用来源', replace: '替换来源', deleteRule: '删除规则',
   loadFailed: '无法加载提示词控制。', saveFailed: '无法保存 Profile。', conflict: 'Profile 已在其他位置变更，已重新加载最新数据。',
+  profileInUse: '仍有会话在使用此 Profile：',
   selectionFailed: '无法更新会话 Profile。', previewFailed: '无法加载预览。', sourcesFailed: '无法加载来源。',
 }
