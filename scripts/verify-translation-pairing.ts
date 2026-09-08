@@ -12,7 +12,7 @@
 
 import { existsSync, globSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, join, resolve, sep } from 'node:path'
-import { isForkPrivatePolicyPath, parseForkPrivatePackages } from './fork-private-packages.ts'
+import { isForkPrivatePolicyPath, isUnpairedDocument, parseForkPrivatePackages } from './fork-private-packages.ts'
 import {
   gitBlobHash,
   gitIndexPaths,
@@ -111,6 +111,16 @@ function isExcluded(file: string): boolean {
   return isTranslationPairingManifestExcluded(file, manifest) || isForkPrivatePolicyPath(privatePolicy, file)
 }
 
+/**
+ * Fork-generated documents exempt from bilingual pairing by exact path. Unlike
+ * {@link isExcluded}, their counterpart and sidecar legitimately remain on
+ * disk; the pairing gate skips the whole trio and reports it separately so a
+ * skip is never counted as a checked pair.
+ */
+function isUnpaired(file: string): boolean {
+  return isUnpairedDocument(privatePolicy, file)
+}
+
 // Enumerate the scope once: the whole corpus, or exactly the named pairs'
 // three files (a named pair whose files are absent is caught by the same
 // completeness rules that cover discovered remnants).
@@ -161,7 +171,7 @@ if (request.scope === 'pairs') {
 if (writeMode) {
   let written = 0
   for (const source of sources) {
-    if (isExcluded(source)) continue
+    if (isExcluded(source) || isUnpaired(source)) continue
     const paths = translationPairPaths(source)
     const { zh, meta } = paths
     if (!repositoryFileExists(source) || !repositoryFileExists(zh)) {
@@ -192,10 +202,15 @@ if (writeMode) {
 
 const errors: string[] = []
 const state = new Map<string, 'ok' | 'out-of-sync' | 'missing'>()
+const unpairedSkipped = new Set<string>()
 
 // 1. Every discovered, non-excluded source merges bilingual.
 for (const source of sources) {
   if (isExcluded(source)) continue
+  if (isUnpaired(source)) {
+    unpairedSkipped.add(source)
+    continue
+  }
   const { zh } = translationPairPaths(source)
   if (!repositoryFileExists(zh)) {
     errors.push(`${source}: in-scope documentation must merge bilingual (docs/i18n/README.md); add the counterpart and record the pair`)
@@ -219,6 +234,13 @@ for (const source of [...pairAnchors].sort()) {
     meta: repositoryFileExists(meta),
   }
 
+  if (isUnpaired(source)) {
+    // Fork-generated document: no pair, hash, or structure requirement. Its
+    // counterpart and sidecar may remain, so it is skipped before the
+    // isExcluded branch (which forbids both).
+    unpairedSkipped.add(source)
+    continue
+  }
   if (isExcluded(source)) {
     if (have.zh) errors.push(`${zh}: ${source} is excluded from pairing (generated or bilingual-by-construction); this translation must not exist`)
     if (have.meta) errors.push(`${meta}: ${source} is excluded from pairing; this consistency record must not exist`)
@@ -339,9 +361,16 @@ for (const source of [...pairAnchors].sort()) {
   if (!state.has(source)) state.set(source, 'ok')
 }
 
-// Complete the state map for --list: any in-scope, non-excluded document with no pair is missing.
+// Complete the state map for --list: any in-scope, non-excluded, paired document
+// with no pair is missing. Unpaired documents are exempt, so they never become
+// 'missing' here — they are reported separately as skipped.
 for (const source of sources) {
-  if (!isExcluded(source) && !state.has(source)) state.set(source, 'missing')
+  if (isExcluded(source)) continue
+  if (isUnpaired(source)) {
+    unpairedSkipped.add(source)
+    continue
+  }
+  if (!state.has(source)) state.set(source, 'missing')
 }
 
 if (listMode) {
@@ -353,13 +382,20 @@ if (listMode) {
   const counts = { 'ok': 0, 'out-of-sync': 0, 'missing': 0 }
   for (const status of state.values()) counts[status]++
   console.log(`verify-translation-pairing: ${counts.ok} ok, ${counts['out-of-sync']} out-of-sync, ${counts.missing} missing (of ${state.size} in scope)`)
+  for (const source of [...unpairedSkipped].sort()) console.log(`unpaired skipped ${source}`)
+  console.log(`verify-translation-pairing: ${unpairedSkipped.size} unpaired skipped (not counted above)`)
   process.exit(0)
 }
 
 if (errors.length === 0) {
+  const checkedPairs = pairAnchors.size - [...unpairedSkipped].filter(source => pairAnchors.has(source)).length
   console.log(request.scope === 'pairs'
-    ? `verify-translation-pairing: ${pairAnchors.size} named ${indexMode ? 'staged ' : ''}pair(s) consistent; the corpus-wide check still runs in doc-sync.`
-    : `verify-translation-pairing: ${pairAnchors.size} pair(s) checked across all in-scope documentation, all consistent.`)
+    ? `verify-translation-pairing: ${checkedPairs} named ${indexMode ? 'staged ' : ''}pair(s) consistent; the corpus-wide check still runs in doc-sync.`
+    : `verify-translation-pairing: ${checkedPairs} pair(s) checked across all in-scope documentation, all consistent.`)
+  if (unpairedSkipped.size > 0) {
+    for (const source of [...unpairedSkipped].sort()) console.log(`unpaired skipped ${source}`)
+    console.log(`verify-translation-pairing: ${unpairedSkipped.size} unpaired skipped (not counted as checked)`)
+  }
   process.exit(0)
 }
 

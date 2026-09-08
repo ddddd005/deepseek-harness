@@ -2,5 +2,10 @@
   "$comment": "Fork-private package roots (fork-local policy, see root AGENTS.md). Every package below these roots is exempt from leaf documentation requirements but remains subject to TypeScript, lint, tests, dependency graphs, and runtime service checks.",
   "directoryPrefixes": [
     "packages/prompt/"
+  ],
+  "$unpairedComment": "Exact English Markdown documents exempt from bilingual pairing because their content is generated per fork and cannot mirror upstream. Chinese counterparts and sidecars may remain; every other document keeps the full pairing gate.",
+  "unpairedDocuments": [
+    "docs/config-catalog.md",
+    "docs/event-producer-consumer.md"
   ]
 }

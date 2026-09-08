@@ -48,7 +48,7 @@ async function collect(stream: AsyncIterable<StreamChunk>): Promise<void> {
 }
 
 async function mountControl(
-  config: { persona?: string; maxProfileCount?: number; maxRulesPerProfile?: number } = {},
+  config: { personaPrefix?: string; maxProfileCount?: number; maxRulesPerProfile?: number } = {},
   pool = new MemoryMediaPool(),
 ): Promise<{ ctx: Context; fiber: { dispose(): Promise<void> }; facility: DomainFacility; pool: MemoryMediaPool }> {
   const ctx = new Context()
@@ -175,8 +175,8 @@ describe('PromptControl service', () => {
 
   it('leaves assembly identical whether prompt-control is mounted', async () => {
     const plain = new Context()
-    await plain.plugin(SystemPrompt, { persona: 'Persona.' })
-    const { ctx: managed } = await mountControl({ persona: 'Persona.' })
+    await plain.plugin(SystemPrompt, { personaPrefix: 'Persona.' })
+    const { ctx: managed } = await mountControl({ personaPrefix: 'Persona.' })
     plain.systemPrompt.section({ name: 'shared', order: 10, text: 'shared text' })
     managed.systemPrompt.section({ name: 'shared', order: 10, text: 'shared text' })
     const withoutControl = renderPrompt(await plain.systemPrompt.assemble())

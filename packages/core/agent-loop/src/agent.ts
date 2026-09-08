@@ -15,7 +15,7 @@ import type {
   PreStepDecision,
   RequestErrorAction,
 } from '@deepseek-ai/dsh-agent'
-import { Inbox, agentEvents, assembleContextFor } from '@deepseek-ai/dsh-agent'
+import { agentEvents, assembleContextFor } from '@deepseek-ai/dsh-agent'
 import type { AgentLoopPromptAssemblyContext, GenerateOptions, LlmCallConfig, Message, PreparedLlmCall } from '@deepseek-ai/dsh-llm'
 import {
   LlmError,
@@ -33,6 +33,7 @@ import { joinContextSections, renderContextSections, renderPrompt } from '@deeps
 import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import type { Context } from '@deepseek-ai/cordis'
+import { ReactLoopInbox } from './inbox.ts'
 import { RuntimeContextProjection } from './runtime-context.ts'
 import { AssistantStreamAttempt } from './assistant-stream.ts'
 import { executeToolCalls } from './tool-calls.ts'
@@ -69,7 +70,7 @@ function requestProposal(header: EpochHeader): LlmCallConfig {
 
 /** Drives one session through turn and step boundaries. */
 export class ReactLoopAgent implements Agent {
-  readonly inbox: Inbox
+  readonly inbox: ReactLoopInbox
   private phase: Phase
   private activityDone: Promise<void> = Promise.resolve()
 
@@ -88,6 +89,8 @@ export class ReactLoopAgent implements Agent {
   /** Process-local revision of assistant frames for this attached Session. */
   private assistantStreamRevision = 0
   private assistantAttemptCounter = 0
+  /** Identities fully frozen by this loop; weak references do not retain replaced history. */
+  private readonly frozenMessages = new WeakSet<Message>()
 
   constructor(
     private loopCtx: Context,
@@ -96,16 +99,12 @@ export class ReactLoopAgent implements Agent {
     public readonly session: Session,
   ) {
     this.dispatch = agentEvents(loopCtx, this)
-    this.inbox = new Inbox(session, {
-      inserted: (message) => { this.dispatch.emit('agent/inbox/inserted', { message }) },
-      discarded: (message) => { this.dispatch.emit('agent/inbox/discarded', { message }) },
-      claimed: (message, turn) => { this.dispatch.emit('agent/inbox/claimed', { message, turn }) },
-    })
+    this.scope = createScope(loopCtx, this)
+    this.ctx = this.scope.ctx.extend({ agent: this })
+    this.inbox = new ReactLoopInbox(this.ctx.sessionProjections, session, this.dispatch)
     /* v8 ignore next -- the loop registers its own turnBoundary unit, so the key is always present */
     const lastTurn = this.loopCtx.sessionProjections.stateOf(session, 'turnBoundary')?.lastTurn ?? 0
     this.phase = { kind: 'idle', lastTurn }
-    this.scope = createScope(loopCtx, this)
-    this.ctx = this.scope.ctx.extend({ agent: this })
     this.runtimeContext = new RuntimeContextProjection(this.ctx, session)
   }
 
@@ -527,7 +526,8 @@ export class ReactLoopAgent implements Agent {
 
   /**
    * Compose one frozen request and bind it to the adapter registration that
-   * resolved its exact-model defaults.
+   * resolved its exact-model defaults. Message identities retain their first
+   * successful deep freeze; each local header is frozen afresh. The signal stays live.
    */
   private async buildRequest(
     turn: number,
@@ -601,16 +601,26 @@ export class ReactLoopAgent implements Agent {
     }
     signal.throwIfAborted()
 
-    const request = createConversationRequestDraft(
-      header.config,
-      boundaryMessages,
-      header.system ?? '',
-      assembly,
-      this,
-      this.session.id,
-      { turn, step },
+    // canonicalHeader is shallow; append logs a detached snapshot, not these local values.
+    deepFreeze(header)
+    for (const message of boundaryMessages) {
+      if (this.frozenMessages.has(message)) continue
+      deepFreeze(message)
+      this.frozenMessages.add(message)
+    }
+    Object.freeze(boundaryMessages)
+    const request = markAgentLoopRequest(Object.freeze({
+      ...header.config,
+      messages: boundaryMessages,
+      ...header.system !== undefined ? { system: header.system } : {},
+      ...header.tools !== undefined ? { tools: header.tools } : {},
+      sessionId: this.session.id,
       signal,
-    )
+    }), {
+      turn,
+      step,
+      prompt: freezePromptAssemblyContext(this, assembly),
+    })
     return { request, ...preparedCall === undefined ? {} : { preparedCall } }
   }
 

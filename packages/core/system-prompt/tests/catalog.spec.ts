@@ -28,7 +28,7 @@ function scopeKeyOf(scope: Scope): ScopeKey {
 
 describe('catalog entries', () => {
   it('distinguishes static from dynamic sections and evaluates resolver text', async () => {
-    const ctx = await mount({ persona: 'Static persona.' })
+    const ctx = await mount({ personaPrefix: 'Static persona.' })
     ctx.systemPrompt.section({
       name: 'dyn',
       order: 10,
@@ -39,7 +39,7 @@ describe('catalog entries', () => {
     expect(dynamic.dynamic).toBe(true)
     expect(dynamic.text).toBe('resolved:t1')
     expect(dynamic.source.lifetime).toBe('dynamic-snapshot')
-    const persona = catalog.sections.find(section => section.name === 'deployment:persona')!
+    const persona = catalog.sections.find(section => section.name === 'deployment:persona-prefix')!
     expect(persona.dynamic).toBe(false)
     expect(persona.text).toBe('Static persona.')
     expect(persona.source.lifetime).toBe('durable')
@@ -172,7 +172,7 @@ describe('catalog entries', () => {
 
 describe('catalog assembly parity', () => {
   it('leaves assembly results untouched by catalog reads', async () => {
-    const ctx = await mount({ persona: 'Persona text.' })
+    const ctx = await mount({ personaPrefix: 'Persona text.' })
     const before = renderPrompt(await ctx.systemPrompt.assemble())
     ctx.systemPrompt.catalog()
     ctx.systemPrompt.catalog(undefined, { includeShadowed: true })
@@ -181,7 +181,7 @@ describe('catalog assembly parity', () => {
   })
 
   it('orders default sections exactly like the assembly does', async () => {
-    const ctx = await mount({ persona: 'Persona text.' })
+    const ctx = await mount({ personaPrefix: 'Persona text.' })
     ctx.systemPrompt.section({ name: 'zeta', order: 10, text: 'zeta text' })
     ctx.systemPrompt.section({ name: 'alpha', order: 10, text: 'alpha text' })
     const catalog = ctx.systemPrompt.catalog()

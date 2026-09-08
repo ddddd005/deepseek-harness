@@ -30,7 +30,7 @@ async function harnessRoutes(
   await ctx.plugin(LlmRuntime)
   await ctx.plugin(SessionStore)
   await ctx.plugin(SessionProjectionRegistry)
-  await ctx.plugin(SystemPrompt, { persona })
+  await ctx.plugin(SystemPrompt, { personaPrefix: persona })
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(AgentLoop, { agents: [] })
@@ -91,7 +91,7 @@ describe('request stability across the loop', () => {
       step: 1,
       attempt: 1,
     })
-    expect(observed?.prompt.sections).toContainEqual({ name: 'deployment:persona', text: 'stable base' })
+    expect(observed?.prompt.sections).toContainEqual({ name: 'deployment:persona-prefix', text: 'stable base' })
     expect(adapter.requests[0]).not.toHaveProperty('prompt')
   })
 
@@ -365,7 +365,7 @@ describe('request stability across the loop', () => {
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(SessionStore)
     await ctx.plugin(SessionProjectionRegistry)
-    await ctx.plugin(SystemPrompt, { persona: 'stable base' })
+    await ctx.plugin(SystemPrompt, { personaPrefix: 'stable base' })
     await ctx.plugin(ToolRuntime)
     await ctx.plugin(AgentRegistry)
     await ctx.plugin(AgentLoop, { agents: [] })
@@ -484,7 +484,7 @@ describe('request stability across the loop', () => {
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(SessionStore)
     await ctx.plugin(SessionProjectionRegistry)
-    await ctx.plugin(SystemPrompt, { persona: 'stable base' })
+    await ctx.plugin(SystemPrompt, { personaPrefix: 'stable base' })
     await ctx.plugin(ToolRuntime)
     await ctx.plugin(AgentRegistry)
     await ctx.plugin(AgentLoop, { agents: [] })
@@ -591,7 +591,7 @@ describe('request stability across the loop', () => {
       { turn: 1, step: 1, attempt: 2 },
     ])
     expect(contexts[0]?.prompt.scope).toBe(contexts[1]?.prompt.scope)
-    expect(contexts[0]?.prompt.sections).toContainEqual({ name: 'deployment:persona', text: 'stable base' })
+    expect(contexts[0]?.prompt.sections).toContainEqual({ name: 'deployment:persona-prefix', text: 'stable base' })
     expect(adapter.requests.every(request => !('prompt' in request))).toBe(true)
     expect(agent.session.snapshotEvents().flatMap(event =>
       event.type === 'request/header' ? [event.data.reason] : [])).toEqual(['initial', 'series'])
