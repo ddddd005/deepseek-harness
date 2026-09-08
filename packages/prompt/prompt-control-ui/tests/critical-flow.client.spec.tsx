@@ -35,6 +35,9 @@ import { apply as applyPromptControlUi, inject as promptControlUiInject } from '
 import { en } from '../src/client/locales.ts'
 import css from '../src/client/PromptControlSettings.module.css'
 
+const ruleWideClass = css.ruleWide
+if (ruleWideClass === undefined) throw new Error('ruleWide class missing from PromptControlSettings.module.css')
+
 const contexts: Context[] = []
 const roots: string[] = []
 
@@ -273,7 +276,7 @@ describe('Prompt Control browser critical flow', () => {
     await screen.findByText(en.empty)
     fireEvent.click(screen.getByRole('button', { name: en.addAppend }))
 
-    expect(screen.getByLabelText(en.text).closest('label')?.classList.contains(css.ruleWide)).toBe(true)
+    expect(screen.getByLabelText(en.text).closest('label')?.classList.contains(ruleWideClass)).toBe(true)
   })
 
   it('places source rule target and replacement text on full-width rows', async () => {
@@ -287,8 +290,8 @@ describe('Prompt Control browser critical flow', () => {
     await screen.findByText(en.empty)
     fireEvent.click(screen.getByRole('button', { name: en.addReplace }))
 
-    expect(screen.getByLabelText(en.target).closest('label')?.classList.contains(css.ruleWide)).toBe(true)
-    expect(screen.getByLabelText(en.text).closest('label')?.classList.contains(css.ruleWide)).toBe(true)
+    expect(screen.getByLabelText(en.target).closest('label')?.classList.contains(ruleWideClass)).toBe(true)
+    expect(screen.getByLabelText(en.text).closest('label')?.classList.contains(ruleWideClass)).toBe(true)
   })
 
   it('creates and selects a Profile, previews it, then sends a finalized request', async () => {
