@@ -9,7 +9,6 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include, { entryListSchema, type PatchOptions } from '@deepseek-ai/cordis-plugin-include'
-import * as PromptControlUi from '@deepseek-ai/dsh-prompt-control-ui'
 import PromptControl from '../../prompt-control/src/index.ts'
 import * as yaml from 'js-yaml'
 
@@ -63,10 +62,16 @@ describe('Prompt Control Web profile overlay', () => {
     context.baseUrl = pathToFileURL(root).href + '/'
     await context.plugin(Loader)
     context.loader.builtins.include = Include
+    let uiMarkerApplied = false
+    const promptControlUiMarker = {
+      apply() {
+        uiMarkerApplied = true
+      },
+    }
     const modules = new Map<string, unknown>([
       ['@test/prompt-control-web-runtime', baseRuntime],
       ['@deepseek-ai/dsh-prompt-control', PromptControl],
-      ['@deepseek-ai/dsh-prompt-control-ui', PromptControlUi],
+      ['@deepseek-ai/dsh-prompt-control-ui', promptControlUiMarker],
     ])
     context.loader.internal = {
       version: 'v2',
@@ -84,6 +89,7 @@ describe('Prompt Control Web profile overlay', () => {
 
     expect(context.get('promptControl')).toBeInstanceOf(PromptControl)
     expect(context.get('promptControlController')).toBeDefined()
+    expect(uiMarkerApplied).toBe(true)
     expect([...context.loader.entries()].map(entry => entry.options.id)).toEqual(expect.arrayContaining([
       'web-runtime', 'prompt-control', 'ui-prompt-control',
     ]))
