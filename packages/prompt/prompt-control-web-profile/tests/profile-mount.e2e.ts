@@ -93,9 +93,18 @@ function installBundle(root: string, dshHome: string): void {
     cwd: root,
     env: cleanEnvironment(root, dshHome),
     encoding: 'utf8',
+    timeout: 120_000,
   })
+  if (result.error !== undefined) {
+    const code = (result.error as NodeJS.ErrnoException).code
+    // spawnSync reports the timeout as ETIMEDOUT after killing the child.
+    if (code === 'ETIMEDOUT') {
+      throw new Error(`dsh plugin add timed out after 120s:\n${result.stdout}\n${result.stderr}`)
+    }
+    throw new Error(`dsh plugin add failed to start (${code ?? 'unknown'}): ${result.error.message}`)
+  }
   if (result.status !== 0) {
-    throw new Error(`dsh plugin add failed (${String(result.status)}):\n${result.stdout}\n${result.stderr}`)
+    throw new Error(`dsh plugin add exited ${String(result.status)}:\n${result.stdout}\n${result.stderr}`)
   }
 }
 
