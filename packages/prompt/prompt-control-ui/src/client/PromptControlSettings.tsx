@@ -186,7 +186,11 @@ export function PromptControlSettings({ api, currentSession, t }: PromptControlS
       }
     }
   }
-  const sourceIds = catalog?.sections.map(item => item.id) ?? []
+  const catalogSections = catalog?.sections ?? []
+  const completeSourceIds = catalogSections.filter(item => item.complete).map(item => item.id)
+  const sourceIds = completeSourceIds.length > 0
+    ? completeSourceIds
+    : catalogSections.filter(item => item.effective).map(item => item.id)
   const addAppendRule = (): void => {
     setRules(current => [...current, appendRule(current.length)])
   }
@@ -232,6 +236,7 @@ export function PromptControlSettings({ api, currentSession, t }: PromptControlS
         {rules.map((rule, index) => <RuleEditor
           key={rule.id}
           rule={rule}
+          sourceIds={sourceIds}
           t={t}
           onChange={(next) => { changeRule(index, next) }}
           onRemove={() => { removeRule(index) }}
@@ -274,8 +279,9 @@ export function PromptControlSettings({ api, currentSession, t }: PromptControlS
   </section>
 }
 
-function RuleEditor({ rule, t, onChange, onRemove }: {
+function RuleEditor({ rule, sourceIds, t, onChange, onRemove }: {
   readonly rule: PromptRule
+  readonly sourceIds: readonly string[]
   readonly t: (key: PromptControlUiKey) => string
   readonly onChange: (rule: PromptRule) => void
   readonly onRemove: () => void
@@ -309,7 +315,8 @@ function RuleEditor({ rule, t, onChange, onRemove }: {
           <option value="user">{t('user')}</option>
         </select>
       </label>
-      <label>{t('text')}
+      <button type="button" title={t('deleteRule')} aria-label={t('deleteRule')} onClick={onRemove}>x</button>
+      <label className={css.ruleWide}>{t('text')}
         <textarea value={rule.text} onChange={(event) => { onChange({ ...rule, text: event.target.value }) }} />
       </label>
     </> : <>
@@ -325,14 +332,16 @@ function RuleEditor({ rule, t, onChange, onRemove }: {
           <option value="replace">{t('replace')}</option>
         </select>
       </label>
-      <label>{t('target')}
-        <input value={rule.target} onChange={(event) => { onChange({ ...rule, target: event.target.value as never }) }} />
+      <button type="button" title={t('deleteRule')} aria-label={t('deleteRule')} onClick={onRemove}>x</button>
+      <label className={css.ruleWide}>{t('target')}
+        <select value={rule.target} onChange={(event) => { onChange({ ...rule, target: event.target.value as never }) }}>
+          {sourceIds.map(sourceId => <option key={sourceId} value={sourceId}>{sourceId}</option>)}
+        </select>
       </label>
-      {rule.action === 'replace' ? <label>{t('text')}
+      {rule.action === 'replace' ? <label className={css.ruleWide}>{t('text')}
         <textarea value={rule.text} onChange={(event) => { onChange({ ...rule, text: event.target.value }) }} />
       </label> : null}
     </>}
-    <button type="button" title={t('deleteRule')} aria-label={t('deleteRule')} onClick={onRemove}>x</button>
   </div>
 }
 

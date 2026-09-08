@@ -33,6 +33,7 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import { apply as applyPromptControlUi, inject as promptControlUiInject } from '../src/client/index.ts'
 import { en } from '../src/client/locales.ts'
+import css from '../src/client/PromptControlSettings.module.css'
 
 const contexts: Context[] = []
 const roots: string[] = []
@@ -232,6 +233,64 @@ function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(e
 }
 
 describe('Prompt Control browser critical flow', () => {
+  it('targets the complete system section when native assembly suppresses other catalog entries', async () => {
+    const { ctx } = await boot()
+    ctx.systemPrompt.section({ name: 'complete-test', order: 0, text: 'Complete prompt.', complete: true })
+    const sessionId = SessionId('browser-complete-target')
+    await ctx.agentLoop.create(sessionId, { provider: 'mock', model: 'mock' })
+    const { slots } = await bootClient(ctx, sessionId)
+    const section = slots.entries('settings.section')[0]!
+    render(createElement(section.component as never, (section.inject as () => object)()))
+
+    await screen.findByText(en.empty)
+    fireEvent.change(screen.getByLabelText(en.name), { target: { value: 'Complete replacement' } })
+    fireEvent.click(screen.getByRole('button', { name: en.addReplace }))
+
+    const target = screen.getByLabelText(en.target) as HTMLSelectElement
+    expect(target.tagName).toBe('SELECT')
+    expect([...target.options].map(option => option.value)).toEqual(['complete-test'])
+    expect(target.value).toBe('complete-test')
+
+    fireEvent.change(screen.getByLabelText(en.text), { target: { value: 'Replacement prompt.' } })
+    fireEvent.click(screen.getByRole('button', { name: en.save }))
+    await screen.findByText('Complete replacement')
+    fireEvent.click(screen.getByRole('button', { name: en.select }))
+    await screen.findByText(en.selected)
+    fireEvent.click(screen.getByRole('button', { name: en.preview }))
+    await waitFor(() => {
+      expect([...document.querySelectorAll('pre')].some(pre => pre.textContent === 'Replacement prompt.')).toBe(true)
+    })
+  })
+
+  it('places request-only text on a full-width rule row', async () => {
+    const { ctx } = await boot()
+    const sessionId = SessionId('browser-rule-layout')
+    await ctx.agentLoop.create(sessionId, { provider: 'mock', model: 'mock' })
+    const { slots } = await bootClient(ctx, sessionId)
+    const section = slots.entries('settings.section')[0]!
+    render(createElement(section.component as never, (section.inject as () => object)()))
+
+    await screen.findByText(en.empty)
+    fireEvent.click(screen.getByRole('button', { name: en.addAppend }))
+
+    expect(screen.getByLabelText(en.text).closest('label')?.classList.contains(css.ruleWide)).toBe(true)
+  })
+
+  it('places source rule target and replacement text on full-width rows', async () => {
+    const { ctx } = await boot()
+    const sessionId = SessionId('browser-source-rule-layout')
+    await ctx.agentLoop.create(sessionId, { provider: 'mock', model: 'mock' })
+    const { slots } = await bootClient(ctx, sessionId)
+    const section = slots.entries('settings.section')[0]!
+    render(createElement(section.component as never, (section.inject as () => object)()))
+
+    await screen.findByText(en.empty)
+    fireEvent.click(screen.getByRole('button', { name: en.addReplace }))
+
+    expect(screen.getByLabelText(en.target).closest('label')?.classList.contains(css.ruleWide)).toBe(true)
+    expect(screen.getByLabelText(en.text).closest('label')?.classList.contains(css.ruleWide)).toBe(true)
+  })
+
   it('creates and selects a Profile, previews it, then sends a finalized request', async () => {
     const { ctx, adapter } = await boot()
     const sessionId = SessionId('browser-critical-flow')
